@@ -87,13 +87,14 @@ public class VentasService {
         ventaRepo.save(ventaEntity);
 
         // Persistir items y asignaciones
+        short numeroLinea = 1;
         for (ItemVenta item : venta.getItems()) {
             var itemEntity = new ItemVentaEntity();
             itemEntity.setId(item.id());
             itemEntity.setNegocioId(negocioId);
             itemEntity.setVentaId(venta.getId());
             itemEntity.setProductoId(item.productoId());
-            itemEntity.setLinea((short) 1);
+            itemEntity.setLinea(numeroLinea++);
             itemEntity.setCantidad(item.cantidad());
             itemEntity.setPrecioUnitario(item.precioUnitario());
             itemEntity.setDescuentoTotalLinea(item.descuentoTotalLinea());

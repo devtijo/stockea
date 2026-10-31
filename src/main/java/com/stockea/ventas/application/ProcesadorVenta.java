@@ -6,6 +6,7 @@ import com.stockea.sync.api.ProcesadorOperacion;
 import com.stockea.sync.api.ResultadoOperacion;
 import com.stockea.sync.api.TipoOperacion;
 import com.stockea.ventas.domain.MetodoPago;
+import com.stockea.ventas.infrastructure.persistence.ItemVentaRepository;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -17,10 +18,14 @@ import java.util.UUID;
 public class ProcesadorVenta implements ProcesadorOperacion {
 
     private final VentasService ventasService;
+    private final ItemVentaRepository itemVentaRepo;
     private final JsonMapper jsonMapper;
 
-    public ProcesadorVenta(VentasService ventasService, JsonMapper jsonMapper) {
+    public ProcesadorVenta(VentasService ventasService,
+                           ItemVentaRepository itemVentaRepo,
+                           JsonMapper jsonMapper) {
         this.ventasService = ventasService;
+        this.itemVentaRepo = itemVentaRepo;
         this.jsonMapper = jsonMapper;
     }
 
@@ -50,7 +55,24 @@ public class ProcesadorVenta implements ProcesadorOperacion {
                 metodo, payload.montoRecibido(), payload.totalCliente()
         );
 
-        return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.ACEPTADA, ventaId);
+        var itemConFaltante = itemVentaRepo.findAll().stream()
+                .filter(i -> i.getVentaId().equals(ventaId))
+                .filter(i -> i.getCantidadSinCobertura() != null && i.getCantidadSinCobertura().signum() > 0)
+                .findFirst();
+
+        if (itemConFaltante.isPresent()) {
+            var item = itemConFaltante.get();
+            var info = new ResultadoOperacion.DiscrepanciaInfo(
+                    item.getProductoId(),
+                    null, // loteId: el faltante no tiene lote asignado
+                    item.getCantidadSinCobertura(),
+                    item.getPrecioUnitario(),
+                    item.getPrecioUnitario()
+            );
+            return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.DISCREPANCIA, ventaId, info);
+        }
+
+        return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.ACEPTADA, ventaId, null);
     }
 
     public record VentaPayload(
