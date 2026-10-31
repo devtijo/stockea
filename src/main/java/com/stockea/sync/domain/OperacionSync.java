@@ -1,5 +1,8 @@
 package com.stockea.sync.domain;
 
+import com.stockea.sync.api.EstadoOperacion;
+import com.stockea.sync.api.TipoOperacion;
+
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
