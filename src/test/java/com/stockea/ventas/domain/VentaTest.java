@@ -19,13 +19,18 @@ class VentaTest {
                 Instant.now(), List.of()
         );
 
+        // Un ítem de 10 unidades cubierto por una asignación de 10
+        var asignacion = new AsignacionLote(
+                UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("10"),
+                null, BigDecimal.ZERO, OrigenAsignacion.DISPOSITIVO
+        );
         var item = new ItemVenta(UUID.randomUUID(), UUID.randomUUID(),
                 new BigDecimal("10"), new BigDecimal("4000"),
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of());
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(asignacion));
 
         Venta venta = Venta.registrar(cmd, List.of(item), Instant.now());
 
-        assertEquals(new BigDecimal("10000"), venta.getCambio()); // 50000 - 40000
+        assertEquals(new BigDecimal("10000"), venta.getCambio());
         assertEquals(EstadoVenta.ACEPTADA, venta.getEstado());
     }
 
@@ -39,7 +44,6 @@ class VentaTest {
                 Instant.now(), List.of()
         );
 
-        // 9 unidades cubiertas + 1 sin cobertura = 10 vendidas
         var asignacion = new AsignacionLote(
                 UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("9"),
                 null, BigDecimal.ZERO, OrigenAsignacion.DISPOSITIVO

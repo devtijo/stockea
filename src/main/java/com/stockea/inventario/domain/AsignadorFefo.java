@@ -1,7 +1,6 @@
 package com.stockea.inventario.domain;
 
 import com.stockea.inventario.api.FraccionLote;
-import com.stockea.inventario.api.LoteDisponible;
 import com.stockea.inventario.api.ResultadoAsignacion;
 import com.stockea.shared.domain.DomainException;
 import com.stockea.shared.domain.ErrorDominio;
