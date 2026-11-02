@@ -1,26 +1,15 @@
 package com.stockea.sync;
 
+import com.stockea.IntegracionBase;
 import com.stockea.TestConstants;
-import com.stockea.shared.dev.TenantDev;
+import com.stockea.shared.seguridad.Rol;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -37,40 +26,24 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 
 // Prueba de integración de punta a punta: HTTP real -> SyncService -> FEFO -> PostgreSQL real.
-// Cubre SPK-002/003/006
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Import(RegistrarVentaIntegrationTest.PostgresConfig.class)
-class RegistrarVentaIntegrationTest {
+// Cubre SPK-002/003/006.
+class RegistrarVentaIntegrationTest extends IntegracionBase {
 
-    @TestConfiguration(proxyBeanMethods = false)
-    static class PostgresConfig {
-        @Bean
-        @ServiceConnection
-        PostgreSQLContainer postgres() {
-            return new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"));
-        }
-    }
-
-    private static final UUID NEGOCIO = TenantDev.NEGOCIO_ID();
     private static final LocalDate HOY = LocalDate.now(ZoneId.of("America/Bogota"));
+    private static final UUID DISPOSITIVO = UUID.randomUUID();
 
-    @Value("${local.server.port}")
-    int puerto;
-    @Autowired JdbcTemplate jdbc;
     @Autowired JsonMapper json;
 
-    private final HttpClient http = HttpClient.newHttpClient();
+    private Sesion cajero;
     private UUID producto;
     private UUID loteA;   // vence primero
     private UUID loteB;
 
     @BeforeEach
-    void limpiarYSembrar() {
-        jdbc.execute("TRUNCATE discrepancia, asignacion_lote, item_venta, venta, movimiento_inventario, "
-                + "operacion_sync, historial_precio, lote, producto CASCADE");
-        producto = UUID.randomUUID();
-        jdbc.update("INSERT INTO producto (id, negocio_id, nombre, unidad_venta, precio_venta) VALUES (?,?,?,?,?)",
-                producto, NEGOCIO, TestConstants.PRODUCTO_LECHE, TestConstants.UNIDAD_VENTA, new BigDecimal(TestConstants.PRECIO_LECHE));
+    void sembrar() {
+        // La limpieza de tablas la hace IntegracionBase antes de cada prueba
+        cajero = crearNegocioCon(Rol.CAJERO);
+        producto = crearProducto(TestConstants.PRODUCTO_LECHE);
         loteA = UUID.randomUUID();
         loteB = UUID.randomUUID();
     }
@@ -103,11 +76,11 @@ class RegistrarVentaIntegrationTest {
         enviarVenta(UUID.randomUUID(), 1, producto, "9");
 
         assertThat(disponible(loteA)).isEqualByComparingTo("0");
-        assertThat(jdbc.queryForObject("SELECT estado FROM lote WHERE id = ?", String.class, loteA)).isEqualTo(TestConstants.ESTADO_AGOTADO);
+        assertThat(valor("SELECT estado FROM lote WHERE id = ?", String.class, loteA)).isEqualTo(TestConstants.ESTADO_AGOTADO);
         assertThat(disponible(loteB)).isEqualByComparingTo("1");
         assertThat(contar("item_venta")).isEqualTo(1);
         assertThat(contar("asignacion_lote")).isEqualTo(2);
-        assertThat(jdbc.queryForObject("SELECT cantidad_sin_cobertura FROM item_venta", BigDecimal.class))
+        assertThat(valor("SELECT cantidad_sin_cobertura FROM item_venta", BigDecimal.class))
                 .isEqualByComparingTo("0");
     }
 
@@ -135,13 +108,13 @@ class RegistrarVentaIntegrationTest {
         assertThat(resp.statusCode()).isEqualTo(200);
         assertThat(contar("venta")).as("la venta se acepta siempre (ADR-002)").isEqualTo(1);
         assertThat(disponible(loteA)).as("el lote queda en 0, nunca negativo").isEqualByComparingTo("0");
-        assertThat(jdbc.queryForObject("SELECT cantidad_sin_cobertura FROM item_venta", BigDecimal.class))
+        assertThat(valor("SELECT cantidad_sin_cobertura FROM item_venta", BigDecimal.class))
                 .isEqualByComparingTo("3");
-        assertThat(jdbc.queryForObject("SELECT estado FROM venta", String.class)).isEqualTo(TestConstants.ESTADO_DISCREPANCIA);
-        assertThat(jdbc.queryForObject("SELECT estado FROM operacion_sync", String.class))
+        assertThat(valor("SELECT estado FROM venta", String.class)).isEqualTo(TestConstants.ESTADO_DISCREPANCIA);
+        assertThat(valor("SELECT estado FROM operacion_sync", String.class))
                 .as("el estado de la operación refleja la discrepancia").isEqualTo(TestConstants.ESTADO_DISCREPANCIA);
         assertThat(contar("discrepancia")).as("debe existir 1 discrepancia ABIERTA").isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT cantidad_faltante FROM discrepancia", BigDecimal.class))
+        assertThat(valor("SELECT cantidad_faltante FROM discrepancia", BigDecimal.class))
                 .isEqualByComparingTo("3");
     }
 
@@ -155,7 +128,7 @@ class RegistrarVentaIntegrationTest {
 
         assertThat(contar("venta")).isEqualTo(2);
         assertThat(disponible(loteA)).isEqualByComparingTo("0");
-        assertThat(jdbc.queryForObject("SELECT SUM(cantidad_sin_cobertura) FROM item_venta", BigDecimal.class))
+        assertThat(valor("SELECT SUM(cantidad_sin_cobertura) FROM item_venta", BigDecimal.class))
                 .isEqualByComparingTo("3");
     }
 
@@ -216,20 +189,56 @@ class RegistrarVentaIntegrationTest {
         assertThat(contar("operacion_sync")).isZero();
     }
 
+    @Test
+    @DisplayName("ADR-002: si faltan DOS productos en la misma venta se registran DOS discrepancias")
+    void unaDiscrepanciaPorCadaItemConFaltante() throws Exception {
+        var pan = crearProducto("Pan");
+        sembrarLote(loteA, "2", HOY.plusDays(5));                       // leche: hay 2, se venden 5
+        sembrarLote(loteB, pan, "1", HOY.plusDays(5));                  // pan: hay 1, se venden 4
+
+        var resp = enviarVentaConDosItems(UUID.randomUUID(), 1, producto, "5", pan, "4");
+
+        assertThat(resp.statusCode()).isEqualTo(200);
+        assertThat(contar("discrepancia")).isEqualTo(2);
+        assertThat(valor("SELECT SUM(cantidad_faltante) FROM discrepancia", BigDecimal.class))
+                .isEqualByComparingTo("6");
+        assertThat(valor("SELECT count(*) FROM discrepancia WHERE item_venta_id IS NOT NULL", Integer.class))
+                .as("cada discrepancia apunta a su item").isEqualTo(2);
+    }
+
     // utilidades
 
+    private UUID crearProducto(String nombre) {
+        var id = UUID.randomUUID();
+        enNegocio(cajero.negocioId(), () -> jdbc.update(
+                "INSERT INTO producto (id, negocio_id, nombre, unidad_venta, precio_venta) VALUES (?,?,?,?,?)",
+                id, cajero.negocioId(), nombre, TestConstants.UNIDAD_VENTA, new BigDecimal(TestConstants.PRECIO_LECHE)));
+        return id;
+    }
+
     private void sembrarLote(UUID id, String cantidad, LocalDate vence) {
-        jdbc.update("INSERT INTO lote (id, negocio_id, producto_id, fecha_vencimiento, cantidad_inicial, "
+        sembrarLote(id, producto, cantidad, vence);
+    }
+
+    private void sembrarLote(UUID id, UUID deProducto, String cantidad, LocalDate vence) {
+        enNegocio(cajero.negocioId(), () -> jdbc.update(
+                "INSERT INTO lote (id, negocio_id, producto_id, fecha_vencimiento, cantidad_inicial, "
                         + "cantidad_disponible, costo_unitario) VALUES (?,?,?,?,?,?,?)",
-                id, NEGOCIO, producto, vence, new BigDecimal(cantidad), new BigDecimal(cantidad), new BigDecimal(TestConstants.COSTO_LECHE));
+                id, cajero.negocioId(), deProducto, vence, new BigDecimal(cantidad), new BigDecimal(cantidad),
+                new BigDecimal(TestConstants.COSTO_LECHE)));
     }
 
     private BigDecimal disponible(UUID lote) {
-        return jdbc.queryForObject("SELECT cantidad_disponible FROM lote WHERE id = ?", BigDecimal.class, lote);
+        return valor("SELECT cantidad_disponible FROM lote WHERE id = ?", BigDecimal.class, lote);
     }
 
     private int contar(String tabla) {
-        return jdbc.queryForObject("SELECT count(*) FROM " + tabla, Integer.class);
+        return valor("SELECT count(*) FROM " + tabla, Integer.class);
+    }
+
+    // Las consultas se hacen "como" el negocio del cajero: RLS oculta los demás negocios
+    private <T> T valor(String sql, Class<T> tipo, Object... args) {
+        return enNegocio(cajero.negocioId(), () -> jdbc.queryForObject(sql, tipo, args));
     }
 
     private UUID resultadoId(HttpResponse<String> r) throws Exception {
@@ -273,10 +282,6 @@ class RegistrarVentaIntegrationTest {
 
         var cuerpo = json.writeValueAsString(Map.of("operaciones", List.of(operacion)));
 
-        var req = HttpRequest.newBuilder(URI.create("http://localhost:" + puerto + TestConstants.ENDPOINT_SYNC))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(cuerpo))
-                .build();
-        return http.send(req, HttpResponse.BodyHandlers.ofString());
+        return post(TestConstants.ENDPOINT_SYNC, cajero.token(), cuerpo, "X-Dispositivo-Id", DISPOSITIVO.toString());
     }
 }
