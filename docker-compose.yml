@@ -1,27 +1,105 @@
+x-backend-comun: &backend-comun
+  image: stockea/backend:local
+  build: .
+  restart: unless-stopped
+  networks: [borde, interna]
+  environment: &backend-env
+    DB_URL: jdbc:postgresql://postgres:5432/stockea
+    STOCKEA_APP_PASSWORD: ${STOCKEA_APP_PASSWORD:?definir en .env}
+    KEYCLOAK_ISSUER_URI: ${KEYCLOAK_PUBLIC_URL:-https://localhost/auth}/realms/stockea
+    KEYCLOAK_JWKS_URI: http://keycloak:8080/auth/realms/stockea/protocol/openid-connect/certs
+    RABBITMQ_HOST: rabbitmq
+    ZONA_NEGOCIO: America/Bogota
+
 services:
+  #  borde
+  certificados:               # crea un certificado TLS local si no hay uno (se ejecuta y termina)
+    image: alpine/openssl
+    entrypoint: ["sh", "/generar-certificado.sh"]
+    volumes:
+      - ./infra/gateway/certs:/certs
+      - ./infra/gateway/generar-certificado.sh:/generar-certificado.sh:ro
+    restart: "no"
+
+  gateway:                    # API Gateway de borde (ADR-007/013)
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_BIND:-127.0.0.1}:443:443"
+      - "${GATEWAY_BIND:-127.0.0.1}:80:80"
+    volumes:
+      - ./infra/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/gateway/snippets:/etc/nginx/snippets:ro
+      - ./infra/gateway/certs:/etc/nginx/certs:ro
+    networks: [borde]
+    depends_on:
+      certificados: { condition: service_completed_successfully }
+      frontend: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8088/stub_status"]
+      interval: 15s
+      retries: 5
+
+  frontend:                   # PWA React servida como archivos estáticos
+    image: stockea/frontend:local
+    build: ./frontend
+    restart: unless-stopped
+    networks: [borde]
+
+  # aplicación
+  backend:                    # API (perfil api)
+    <<: *backend-comun
+    environment:
+      <<: *backend-env
+      SPRING_PROFILES_ACTIVE: api
+      STOCKEA_MIGRATOR_PASSWORD: ${STOCKEA_MIGRATOR_PASSWORD:?definir en .env}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080/auth
+      STOCKEA_API_CLIENT_SECRET: ${STOCKEA_API_CLIENT_SECRET:?definir en .env}
+      RABBITMQ_USER: stockea_api
+      RABBITMQ_PASSWORD: ${RABBITMQ_API_PASSWORD:?definir en .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq-init: { condition: service_completed_successfully }
+      keycloak: { condition: service_started }
+
+  worker:                     # consumidor de eventos: MISMA imagen, otro proceso (12-Factor VIII)
+    <<: *backend-comun
+    build: !reset null        # usa la imagen que construye "backend"
+    networks: [interna]       # no recibe tráfico del gateway
+    environment:
+      <<: *backend-env
+      SPRING_PROFILES_ACTIVE: worker
+      RABBITMQ_USER: stockea_worker
+      RABBITMQ_PASSWORD: ${RABBITMQ_WORKER_PASSWORD:?definir en .env}
+    depends_on:
+      backend: { condition: service_healthy }   # la API ya migró la base
+
+  #  datos e identidad
   postgres:
     image: postgres:16-alpine
-    container_name: stockea-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?definir en .env}
       STOCKEA_MIGRATOR_PASSWORD: ${STOCKEA_MIGRATOR_PASSWORD:?definir en .env}
       STOCKEA_APP_PASSWORD: ${STOCKEA_APP_PASSWORD:?definir en .env}
+      STOCKEA_MONITOR_PASSWORD: ${STOCKEA_MONITOR_PASSWORD:?definir en .env}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?definir en .env}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [interna]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       retries: 10
 
-  keycloak:
+  keycloak:                   # Identity Provider, detrás del gateway en /auth
     image: quay.io/keycloak/keycloak:26.8.1
-    container_name: stockea-keycloak
-    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    restart: unless-stopped
+    command: ["start", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?definir en .env}
@@ -29,16 +107,125 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?definir en .env}
-      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
-      STOCKEA_WEB_URL: ${STOCKEA_WEB_URL:-http://localhost:5173}
+      KC_HTTP_ENABLED: "true"           # el TLS termina en el gateway
+      KC_HTTP_PORT: "8080"
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-https://localhost/auth}
+      KC_HOSTNAME_ADMIN: http://localhost:8180/auth   # consola solo desde este equipo
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_EVENT_METRICS_USER_ENABLED: "true"
+      STOCKEA_WEB_URL: ${STOCKEA_WEB_URL:-https://localhost}
+      STOCKEA_DEV_WEB_URL: ${STOCKEA_DEV_WEB_URL:-http://localhost:5173}
       STOCKEA_API_CLIENT_SECRET: ${STOCKEA_API_CLIENT_SECRET:?definir en .env}
     ports:
-      - "127.0.0.1:8180:8180"
+      - "127.0.0.1:8180:8080"   # consola de administración (no pasa por el gateway)
     volumes:
       - ./infra/keycloak:/opt/keycloak/data/import:ro
+    networks: [borde, interna]
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: { condition: service_healthy }
+    healthcheck:   # la imagen no trae curl/wget: se usa /dev/tcp de bash contra el puerto de gestión
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /auth/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 15s
+      start_period: 90s
+      retries: 10
+
+  # mensajería
+  rabbitmq:                   # Message broker
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?definir en .env}
+    ports:
+      - "127.0.0.1:15672:15672" # consola de administración
+      - "127.0.0.1:5672:5672"   # para el backend corriendo desde IntelliJ
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/90-stockea.conf:ro
+    networks: [interna]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 10
+
+  rabbitmq-init:              # topología + usuarios de mínimo privilegio (se ejecuta y termina)
+    image: curlimages/curl:8.16.0
+    entrypoint: ["sh", "/config/configurar.sh"]
+    environment:
+      RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:-admin}
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:?definir en .env}
+      RABBITMQ_API_PASSWORD: ${RABBITMQ_API_PASSWORD:?definir en .env}
+      RABBITMQ_WORKER_PASSWORD: ${RABBITMQ_WORKER_PASSWORD:?definir en .env}
+    volumes:
+      - ./infra/rabbitmq:/config:ro
+    networks: [interna]
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    restart: "no"
+
+  # observabilidad
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    networks: [interna]
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?definir en .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"       # sin llamadas a internet (privacidad)
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: America/Bogota
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    networks: [interna]
+    depends_on: [prometheus]
+
+  postgres-exporter:          # métricas de PostgreSQL con un rol que solo ve estadísticas
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_URI: postgres:5432/stockea?sslmode=disable
+      DATA_SOURCE_USER: stockea_monitor
+      DATA_SOURCE_PASS: ${STOCKEA_MONITOR_PASSWORD:?definir en .env}
+    networks: [interna]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  nginx-exporter:             # métricas del gateway (stub_status, puerto interno 8088)
+    image: nginx/nginx-prometheus-exporter:1.4.2
+    restart: unless-stopped
+    command: ["--nginx.scrape-uri=http://gateway:8088/stub_status"]
+    networks: [borde, interna]
+    depends_on: [gateway]
+
+networks:
+  borde: {}
+  interna: {}
 
 volumes:
   pgdata: {}
+  rabbitmqdata: {}
+  prometheusdata: {}
+  grafanadata: {}

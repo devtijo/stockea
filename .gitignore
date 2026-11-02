@@ -32,6 +32,10 @@ build/
 ### VS Code ###
 .vscode/
 
+### Secretos (solo la plantilla .env.example va a git)
 .env
+/.env.*
+!/.env.example
 
+### macOS
 .DS_Store
