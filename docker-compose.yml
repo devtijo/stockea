@@ -3,13 +3,42 @@ services:
     image: postgres:16-alpine
     container_name: stockea-postgres
     environment:
-      POSTGRES_DB: stockea
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?definir en .env}
+      STOCKEA_MIGRATOR_PASSWORD: ${STOCKEA_MIGRATOR_PASSWORD:?definir en .env}
+      STOCKEA_APP_PASSWORD: ${STOCKEA_APP_PASSWORD:?definir en .env}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?definir en .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    container_name: stockea-keycloak
+    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?definir en .env}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?definir en .env}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      STOCKEA_WEB_URL: ${STOCKEA_WEB_URL:-http://localhost:5173}
+      STOCKEA_API_CLIENT_SECRET: ${STOCKEA_API_CLIENT_SECRET:?definir en .env}
+    ports:
+      - "127.0.0.1:8180:8180"
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata: {}
