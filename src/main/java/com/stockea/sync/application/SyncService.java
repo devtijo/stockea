@@ -10,6 +10,11 @@ import com.stockea.sync.infrastructure.persistence.OperacionSyncEntity;
 import com.stockea.sync.infrastructure.persistence.OperacionSyncId;
 import com.stockea.sync.infrastructure.persistence.OperacionSyncRepository;
 import com.stockea.sync.infrastructure.web.dto.SyncRequest;
+import com.stockea.shared.metricas.DespuesDelCommit;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,22 +27,33 @@ import java.util.UUID;
 @Service
 public class SyncService {
 
+    private static final Logger log = LoggerFactory.getLogger(SyncService.class);
+
     private final JdbcTemplate jdbcTemplate;
     private final OperacionSyncRepository operacionRepo;
     private final DiscrepanciaRepository discrepanciaRepo;
     private final List<ProcesadorOperacion> procesadores;
     private final Clock clock;
+    private final MeterRegistry metricas;
 
     public SyncService(JdbcTemplate jdbcTemplate,
                        OperacionSyncRepository operacionRepo,
                        DiscrepanciaRepository discrepanciaRepo,
                        List<ProcesadorOperacion> procesadores,
-                       Clock clock) {
+                       Clock clock,
+                       MeterRegistry metricas) {
         this.jdbcTemplate = jdbcTemplate;
         this.operacionRepo = operacionRepo;
         this.discrepanciaRepo = discrepanciaRepo;
         this.procesadores = procesadores;
         this.clock = clock;
+        this.metricas = metricas;
+        // Contadores en 0 desde el arranque: increase() de Prometheus no cuenta el primer
+        // incremento de una serie que aún no existía (las alertas y paneles lo perderían).
+        for (var estado : new String[]{"ACEPTADA", "DISCREPANCIA"}) {
+            metricas.counter("stockea.sync.operaciones", "tipo", "VENTA", "estado", estado);
+        }
+        metricas.counter("stockea.discrepancias.registradas", "motivo", "STOCK_INSUFICIENTE");
     }
 
     @Transactional
@@ -112,8 +128,25 @@ public class SyncService {
             entidad.setResultadoId(resultado.resultadoId());
             operacionRepo.save(entidad);
 
+            registrarMetricasYLog(op.tipo(), op.operacionId(), resultado);
             resultados.add(resultado);
         }
         return resultados;
+    }
+
+    // Observabilidad: solo cuenta si la transacción hace COMMIT
+    private void registrarMetricasYLog(String tipo, UUID operacionId, ResultadoOperacion resultado) {
+        var estado = resultado.estado().name();
+        var faltantes = resultado.discrepancias().size();
+        DespuesDelCommit.ejecutar(() -> {
+            metricas.counter("stockea.sync.operaciones", "tipo", tipo, "estado", estado).increment();
+            if (faltantes > 0) {
+                metricas.counter("stockea.discrepancias.registradas", "motivo", "STOCK_INSUFICIENTE")
+                        .increment(faltantes);
+            }
+            MDC.put("operacion_id", operacionId.toString());
+            log.info("Operación {} {} procesada: {}", tipo, operacionId, estado);
+            MDC.remove("operacion_id");
+        });
     }
 }

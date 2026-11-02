@@ -40,9 +40,11 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/publico/negocios").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/actuator/prometheus").permitAll()
                         .requestMatchers("/api/usuarios/**").hasRole(Rol.ADMINISTRADOR.name())
                         .requestMatchers("/api/sync/**", "/api/catalogo/**").hasRole(Rol.CAJERO.name())
+                        .requestMatchers("/api/analitica/**").hasRole(Rol.SUPERVISOR.name())
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(convertidorDeRoles())))
