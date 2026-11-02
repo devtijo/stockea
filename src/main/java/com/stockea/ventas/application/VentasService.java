@@ -4,6 +4,10 @@ import com.stockea.inventario.api.InventarioApi;
 import com.stockea.shared.tiempo.FechaNegocio;
 import com.stockea.ventas.domain.*;
 import com.stockea.ventas.infrastructure.persistence.*;
+import com.stockea.shared.metricas.DespuesDelCommit;
+import com.stockea.ventas.api.VentaRegistrada;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,16 +27,26 @@ public class VentasService {
     private final ItemVentaRepository itemRepo;
     private final AsignacionLoteRepository asignacionRepo;
     private final Clock clock;
+    private final ApplicationEventPublisher eventos;
+    private final MeterRegistry metricas;
     private final ZoneId zonaNegocio = ZoneId.of("America/Bogota");
 
     public VentasService(InventarioApi inventarioApi, VentaRepository ventaRepo,
                          ItemVentaRepository itemRepo, AsignacionLoteRepository asignacionRepo,
-                         Clock clock) {
+                         Clock clock, ApplicationEventPublisher eventos, MeterRegistry metricas) {
         this.inventarioApi = inventarioApi;
         this.ventaRepo = ventaRepo;
         this.itemRepo = itemRepo;
         this.asignacionRepo = asignacionRepo;
         this.clock = clock;
+        this.eventos = eventos;
+        this.metricas = metricas;
+        for (var metodo : MetodoPago.values()) {
+            metricas.counter("stockea.ventas.pesos", "metodo_pago", metodo.name());
+            for (var estado : EstadoVenta.values()) {
+                metricas.counter("stockea.ventas", "metodo_pago", metodo.name(), "estado", estado.name());
+            }
+        }
     }
 
     @Transactional
@@ -117,7 +131,27 @@ public class VentasService {
             }
         }
 
+        // Dentro de la transacción: Modulith lo guarda en el outbox y lo envía a RabbitMQ tras el COMMIT.
+        eventos.publishEvent(new VentaRegistrada(
+                negocioId, venta.getId(), operacionId, venta.getEstado().name(), fechaVenta,
+                venta.getTotal(), venta.getMetodoPago().name(), ventaEntity.getRegistradaEn(),
+                venta.getItems().stream()
+                        .map(i -> new VentaRegistrada.Item(i.productoId(), i.cantidad()))
+                        .toList()));
+
+        registrarMetricas(venta);
         return venta.getId();
+    }
+
+    // Métricas de negocio: ventas y pesos vendidos, solo tras el COMMIT
+    private void registrarMetricas(Venta venta) {
+        var metodo = venta.getMetodoPago().name();
+        var estado = venta.getEstado().name();
+        var total = venta.getTotal().doubleValue();
+        DespuesDelCommit.ejecutar(() -> {
+            metricas.counter("stockea.ventas", "metodo_pago", metodo, "estado", estado).increment();
+            metricas.counter("stockea.ventas.pesos", "metodo_pago", metodo).increment(total);
+        });
     }
 
     public record ItemCmd(UUID productoId, BigDecimal cantidad, BigDecimal precioUnitario) {}

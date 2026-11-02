@@ -1,0 +1,41 @@
+{
+  "rabbit_version": "4.4.0",
+  "vhosts": [
+    { "name": "stockea" }
+  ],
+  "exchanges": [
+    {
+      "name": "stockea.ventas", "vhost": "stockea", "type": "topic",
+      "durable": true, "auto_delete": false, "internal": false, "arguments": {}
+    },
+    {
+      "name": "stockea.ventas.dlx", "vhost": "stockea", "type": "direct",
+      "durable": true, "auto_delete": false, "internal": false, "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "analitica.velocidad-venta", "vhost": "stockea", "durable": true, "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-dead-letter-exchange": "stockea.ventas.dlx",
+        "x-dead-letter-routing-key": "analitica.velocidad-venta",
+        "x-delivery-limit": 10
+      }
+    },
+    {
+      "name": "analitica.velocidad-venta.dlq", "vhost": "stockea", "durable": true, "auto_delete": false,
+      "arguments": { "x-queue-type": "quorum" }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "stockea.ventas", "vhost": "stockea", "destination": "analitica.velocidad-venta",
+      "destination_type": "queue", "routing_key": "venta.registrada", "arguments": {}
+    },
+    {
+      "source": "stockea.ventas.dlx", "vhost": "stockea", "destination": "analitica.velocidad-venta.dlq",
+      "destination_type": "queue", "routing_key": "analitica.velocidad-venta", "arguments": {}
+    }
+  ]
+}
