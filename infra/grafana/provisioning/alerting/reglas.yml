@@ -1,0 +1,236 @@
+# Alertas de STOCKEA Las evalúa Grafana cada minuto.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: stockea
+    folder: STOCKEA
+    interval: 1m
+    rules:
+      - uid: stockea-servicio-caido
+        title: Servicio de STOCKEA caído
+        condition: C
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: critica
+          sistema: stockea
+        annotations:
+          summary: Prometheus no alcanza {{ $labels.job }} desde hace 1 minuto.
+          description: 'Revisar: docker compose ps y docker compose logs {{ $labels.job }}. Las ventas offline siguen guardándose en los equipos.'
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: up{job=~"backend|worker|keycloak|rabbitmq|postgres|gateway"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+      - uid: stockea-accesos-rechazados
+        title: Ráfaga de accesos rechazados (posible ataque)
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: alta
+          sistema: stockea
+        annotations:
+          summary: Más de 30 respuestas 401/403 en 5 minutos.
+          description: OWASP A09. Buscar en los logs evento=seguridad.* y agrupar por ip_cliente y ruta. Puede ser fuerza bruta o un token robado.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(increase(stockea_seguridad_eventos_total{tipo=~"no_autenticado|acceso_denegado"}[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 30
+      - uid: stockea-dlq-con-mensajes
+        title: Eventos en la cola de mensajes muertos
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: media
+          sistema: stockea
+        annotations:
+          summary: Hay eventos que el Worker no pudo procesar.
+          description: Ver el mensaje en la consola de RabbitMQ (cola analitica.velocidad-venta.dlq), corregir la causa y reenviarlo.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(rabbitmq_detailed_queue_messages{queue="analitica.velocidad-venta.dlq"})
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+      - uid: stockea-outbox-atascado
+        title: Eventos que no llegan a RabbitMQ
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: media
+          sistema: stockea
+        annotations:
+          summary: Hay eventos de venta guardados que no se han enviado al broker en 5 minutos.
+          description: Las ventas NO se pierden (están en event_publication). Revisar que RabbitMQ esté arriba; se reenvían solos cada minuto.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(stockea_eventos_pendientes)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+      - uid: stockea-errores-5xx
+        title: Errores del servidor en la API
+        condition: C
+        for: 2m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: alta
+          sistema: stockea
+        annotations:
+          summary: Más del 5 % de las peticiones a la API terminan en error 5xx.
+          description: Buscar en los logs del backend level=ERROR con el request_id. La PWA reintenta sola (ADR-022).
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(rate(http_server_requests_seconds_count{job="backend",status=~"5.."}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{job="backend"}[5m])), 0.001)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0.05
+      - uid: stockea-discrepancias-altas
+        title: Muchas ventas sin stock
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: baja
+          sistema: stockea
+        annotations:
+          summary: Más de 10 discrepancias de inventario en la última hora.
+          description: El inventario del sistema no coincide con el físico. El supervisor debe revisar entradas de mercancía y conteos.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: sum(increase(stockea_discrepancias_registradas_total[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 10

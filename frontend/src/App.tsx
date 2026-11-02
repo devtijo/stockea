@@ -4,6 +4,7 @@ import { guardarCatalogo, perfilGuardado, prepararEquipoPara, type Perfil, type 
 import { ETIQUETA_ROL } from './lib/formato';
 import { reanudarSync, useSyncOutbox } from './SyncOutbox';
 import RegistroNegocio from './pantallas/RegistroNegocio';
+import Reposicion from './pantallas/Reposicion';
 import Usuarios from './pantallas/Usuarios';
 import Vender from './pantallas/Vender';
 
@@ -14,7 +15,7 @@ type Fase =
     | { tipo: 'LISTO'; perfil: Perfil; sinConexion: boolean }
     | { tipo: 'BLOQUEADO'; mensaje: string };
 
-type Pestana = 'VENDER' | 'USUARIOS';
+type Pestana = 'VENDER' | 'REPOSICION' | 'USUARIOS';
 
 /** Descarga el catálogo del negocio y lo deja en Dexie para vender sin internet. */
 async function descargarCatalogo(): Promise<void> {
@@ -121,6 +122,7 @@ interface CajaProps {
 function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatalogo }: CajaProps) {
   const sync = useSyncOutbox();
   const esAdmin = perfil.rol === 'ADMINISTRADOR';
+  const esSupervisor = perfil.rol !== 'CAJERO'; // roles acumulativos (ADR-005)
 
   // Tras cada sincronización el servidor ya descontó stock: se refresca la referencia local.
   useEffect(() => {
@@ -172,19 +174,26 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
             </p>
         )}
 
-        {esAdmin && (
+        {esSupervisor && (
             <nav className="pestanas" aria-label="Secciones">
               <button type="button" aria-current={pestana === 'VENDER' ? 'page' : undefined} onClick={() => setPestana('VENDER')}>
                 Vender
               </button>
-              <button type="button" aria-current={pestana === 'USUARIOS' ? 'page' : undefined} onClick={() => setPestana('USUARIOS')}>
-                Usuarios
+              <button type="button" aria-current={pestana === 'REPOSICION' ? 'page' : undefined} onClick={() => setPestana('REPOSICION')}>
+                Reposición
               </button>
+              {esAdmin && (
+                  <button type="button" aria-current={pestana === 'USUARIOS' ? 'page' : undefined} onClick={() => setPestana('USUARIOS')}>
+                    Usuarios
+                  </button>
+              )}
             </nav>
         )}
 
         {pestana === 'USUARIOS' && esAdmin ? (
             <Usuarios perfil={perfil} online={sync.online && !sinConexionAlAbrir} />
+        ) : pestana === 'REPOSICION' && esSupervisor ? (
+            <Reposicion online={sync.online && !sinConexionAlAbrir} />
         ) : (
             <Vender sync={sync} alActualizarCatalogo={actualizarCatalogo} />
         )}

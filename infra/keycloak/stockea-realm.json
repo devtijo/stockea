@@ -55,11 +55,11 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "frontchannelLogout": true,
-      "redirectUris": ["${STOCKEA_WEB_URL:http://localhost:5173}/*"],
-      "webOrigins": ["${STOCKEA_WEB_URL:http://localhost:5173}"],
+      "redirectUris": ["${STOCKEA_WEB_URL:https://localhost}/*", "${STOCKEA_DEV_WEB_URL:http://localhost:5173}/*"],
+      "webOrigins": ["${STOCKEA_WEB_URL:https://localhost}", "${STOCKEA_DEV_WEB_URL:http://localhost:5173}"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "${STOCKEA_WEB_URL:http://localhost:5173}/*"
+        "post.logout.redirect.uris": "${STOCKEA_WEB_URL:https://localhost}/*##${STOCKEA_DEV_WEB_URL:http://localhost:5173}/*"
       },
       "protocolMappers": [
         {

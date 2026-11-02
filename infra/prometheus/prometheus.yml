@@ -1,0 +1,45 @@
+# Prometheus de STOCKEA Raspa por la red interna de docker: ninguno de
+# estos puertos de métricas se publica hacia afuera ni pasa por el gateway
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: backend               # API Spring Boot (puerto de gestión)
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["backend:8081"]
+
+  - job_name: worker                # Worker: mismo JAR, perfil worker
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["worker:8081"]
+
+  - job_name: rabbitmq              # métricas agregadas del broker
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  - job_name: rabbitmq-colas        # mensajes por cola (alerta de la DLQ)
+    metrics_path: /metrics/detailed
+    params:
+      vhost: ["stockea"]
+      family: ["queue_coarse_metrics"]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: gateway               # Nginx (stub_status vía exporter)
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  - job_name: keycloak              # Identity Provider (puerto de gestión 9000)
+    metrics_path: /auth/metrics
+    static_configs:
+      - targets: ["keycloak:9000"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

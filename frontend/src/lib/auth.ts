@@ -5,7 +5,7 @@ import Keycloak from 'keycloak-js';
 // no se guarda en localStorage (si hay XSS, no se lo pueden llevar).
 
 const keycloak = new Keycloak({
-    url: import.meta.env.VITE_KEYCLOAK_URL ?? 'http://localhost:8180',
+    url: import.meta.env.VITE_KEYCLOAK_URL ?? `${window.location.origin}/auth`,
     realm: import.meta.env.VITE_KEYCLOAK_REALM ?? 'stockea',
     clientId: import.meta.env.VITE_KEYCLOAK_CLIENT ?? 'stockea-web',
 });
@@ -15,7 +15,11 @@ export type EstadoSesion = 'AUTENTICADO' | 'ANONIMO' | 'SIN_CONEXION';
 let inicio: Promise<EstadoSesion> | null = null;
 let keycloakListo = false;
 
-
+/**
+ * Revisa si ya hay sesión sin forzar el login (check-sso). Sin internet no se
+ * contacta a Keycloak: el equipo sigue vendiendo con el perfil guardado y la
+ * cola espera a que vuelva la conexión (ADR-001).
+ */
 export function iniciarSesion(): Promise<EstadoSesion> {
     // StrictMode monta dos veces: keycloak-js solo admite un init.
     inicio ??= (async () => {
@@ -80,7 +84,7 @@ export async function mensajeDeError(r: Response): Promise<string> {
         const p = (await r.json()) as { detail?: string };
         if (p.detail) return p.detail;
     } catch {
-
+        /* cuerpo vacío */
     }
     if (r.status === 403) return 'No tiene permiso para esta acción.';
     return `Error ${r.status}`;

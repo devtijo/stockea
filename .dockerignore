@@ -1,0 +1,11 @@
+# Solo el backend entra al contexto de construcción de esta imagen
+target/
+frontend/
+infra/
+e2e/
+.git/
+.idea/
+*.md
+.env
+.env.*
+!.env.example

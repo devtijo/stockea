@@ -17,6 +17,11 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 
   CREATE ROLE keycloak LOGIN PASSWORD '${KEYCLOAK_DB_PASSWORD}';
   CREATE DATABASE keycloak OWNER keycloak;
+
+  CREATE ROLE stockea_monitor LOGIN PASSWORD '${STOCKEA_MONITOR_PASSWORD}'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+  GRANT pg_monitor TO stockea_monitor;
+  GRANT CONNECT ON DATABASE stockea TO stockea_monitor;
 EOSQL
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname stockea <<-EOSQL
