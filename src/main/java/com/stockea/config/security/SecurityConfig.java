@@ -44,7 +44,8 @@ public class SecurityConfig {
                                 "/actuator/prometheus").permitAll()
                         .requestMatchers("/api/usuarios/**").hasRole(Rol.ADMINISTRADOR.name())
                         .requestMatchers("/api/sync/**", "/api/catalogo/**").hasRole(Rol.CAJERO.name())
-                        .requestMatchers("/api/analitica/**").hasRole(Rol.SUPERVISOR.name())
+                        .requestMatchers("/api/analitica/**", "/api/inventario/**", "/api/descuentos/**",
+                                "/api/caja/**", "/api/discrepancias/**").hasRole(Rol.SUPERVISOR.name())
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(o -> o.jwt(jwt -> jwt.jwtAuthenticationConverter(convertidorDeRoles())))

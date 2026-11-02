@@ -1,5 +1,6 @@
 package com.stockea.ventas.application;
 
+import com.stockea.identidad.api.NegocioApi;
 import com.stockea.sync.api.ComandoOperacion;
 import com.stockea.sync.api.EstadoOperacion;
 import com.stockea.sync.api.ProcesadorOperacion;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -19,13 +21,16 @@ public class ProcesadorVenta implements ProcesadorOperacion {
 
     private final VentasService ventasService;
     private final ItemVentaRepository itemVentaRepo;
+    private final NegocioApi negocioApi;
     private final JsonMapper jsonMapper;
 
     public ProcesadorVenta(VentasService ventasService,
                            ItemVentaRepository itemVentaRepo,
+                           NegocioApi negocioApi,
                            JsonMapper jsonMapper) {
         this.ventasService = ventasService;
         this.itemVentaRepo = itemVentaRepo;
+        this.negocioApi = negocioApi;
         this.jsonMapper = jsonMapper;
     }
 
@@ -43,35 +48,62 @@ public class ProcesadorVenta implements ProcesadorOperacion {
             throw new IllegalArgumentException("Payload de venta inválido", e);
         }
 
+        // Toda venta pertenece a un turno de caja Sin turno no hay cuadre posible.
+        if (payload.turnoId() == null) {
+            return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.RECHAZADA_SIN_TURNO, null);
+        }
+
+        // El cajero es quien estaba en la caja al vender, no quien sincroniza.
+        var cajero = negocioApi.esUsuarioDelNegocio(cmd.negocioId(), payload.cajeroId())
+                ? payload.cajeroId() : cmd.usuarioId();
+
         var items = payload.items().stream()
-                .map(i -> new VentasService.ItemCmd(i.productoId(), i.cantidad(), i.precioUnitario()))
+                .map(i -> new VentasService.ItemCmd(i.productoId(), i.cantidad(), i.precioUnitario(), i.descuento()))
                 .toList();
 
         var metodo = MetodoPago.valueOf(payload.metodoPago());
 
-        var ventaId = ventasService.registrarVenta(
-                cmd.negocioId(), cmd.dispositivoId(), cmd.cajeroId(), cmd.turnoCajaId(),
+        var resultado = ventasService.registrarVenta(
+                cmd.negocioId(), cmd.dispositivoId(), cajero, cmd.usuarioId(), payload.turnoId(),
                 cmd.operacionId(), cmd.fechaCliente(), items,
                 metodo, payload.montoRecibido(), payload.totalCliente()
         );
 
-        // Una discrepancia por CADA item que no alcanzó a cubrirse con stock (ADR-002)
-        var discrepancias = itemVentaRepo.findByVentaIdOrderByLinea(ventaId).stream()
+        var discrepancias = new ArrayList<ResultadoOperacion.DiscrepanciaInfo>();
+
+        // Una discrepancia por CADA item que no alcanzó a cubrirse con stock
+        itemVentaRepo.findByVentaIdOrderByLinea(resultado.ventaId()).stream()
                 .filter(i -> i.getCantidadSinCobertura() != null && i.getCantidadSinCobertura().signum() > 0)
                 .map(i -> new ResultadoOperacion.DiscrepanciaInfo(
+                        "STOCK_INSUFICIENTE",
                         i.getId(),
                         i.getProductoId(),
-                        null, // loteId: el faltante no tiene lote asignado
+                        null, // el faltante no tiene lote asignado
                         i.getCantidadSinCobertura(),
                         i.getPrecioUnitario(),
                         i.getPrecioUnitario()))
-                .toList();
+                .forEach(discrepancias::add);
+
+        // Y una por cada línea cobrada distinto a lo vigente se guarda el valor neto de la línea
+        resultado.diferencias().stream()
+                .map(d -> new ResultadoOperacion.DiscrepanciaInfo(
+                        "PRECIO_DIFERENTE",
+                        d.itemVentaId(),
+                        d.productoId(),
+                        null,
+                        BigDecimal.ZERO,
+                        d.cobrado(),
+                        d.esperado()))
+                .forEach(discrepancias::add);
 
         var estado = discrepancias.isEmpty() ? EstadoOperacion.ACEPTADA : EstadoOperacion.DISCREPANCIA;
-        return new ResultadoOperacion(cmd.operacionId(), estado, ventaId, discrepancias);
+        return new ResultadoOperacion(cmd.operacionId(), estado, resultado.ventaId(), discrepancias);
     }
 
+    // turnoId y cajeroId los fija el dispositivo en el momento de la venta
     public record VentaPayload(
+            UUID turnoId,
+            UUID cajeroId,
             String metodoPago,
             BigDecimal montoRecibido,
             BigDecimal totalCliente,
@@ -80,7 +112,8 @@ public class ProcesadorVenta implements ProcesadorOperacion {
         public record ItemPayload(
                 UUID productoId,
                 BigDecimal cantidad,
-                BigDecimal precioUnitario
+                BigDecimal precioUnitario,
+                BigDecimal descuento
         ) {}
     }
 }

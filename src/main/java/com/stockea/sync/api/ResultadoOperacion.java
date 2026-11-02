@@ -18,7 +18,9 @@ public record ResultadoOperacion(
         this(operacionId, estado, resultadoId, List.of());
     }
 
+    // motivo: STOCK_INSUFICIENTE o PRECIO_DIFERENTE
     public record DiscrepanciaInfo(
+            String motivo,
             UUID itemVentaId,
             UUID productoId,
             UUID loteId,

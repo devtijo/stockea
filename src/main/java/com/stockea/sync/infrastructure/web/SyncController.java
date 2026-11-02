@@ -1,7 +1,6 @@
 package com.stockea.sync.infrastructure.web;
 
 import com.stockea.identidad.api.DispositivoApi;
-import com.stockea.shared.dev.TenantDev;
 import com.stockea.shared.tenant.TenantContext;
 import com.stockea.sync.application.SyncService;
 import com.stockea.sync.infrastructure.web.dto.SyncRequest;
@@ -37,7 +36,6 @@ public class SyncController {
                 tenant.negocioId(),
                 dispositivoId,
                 tenant.usuarioId(),
-                TenantDev.TURNO_ID(),
                 request
         );
         return ResponseEntity.ok(Map.of("resultados", resultados));

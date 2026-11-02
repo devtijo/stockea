@@ -53,13 +53,17 @@ public class SyncService {
         for (var estado : new String[]{"ACEPTADA", "DISCREPANCIA"}) {
             metricas.counter("stockea.sync.operaciones", "tipo", "VENTA", "estado", estado);
         }
-        metricas.counter("stockea.discrepancias.registradas", "motivo", "STOCK_INSUFICIENTE");
+        for (var tipo : new String[]{"ABRIR_TURNO", "CERRAR_TURNO"}) {
+            metricas.counter("stockea.sync.operaciones", "tipo", tipo, "estado", "ACEPTADA");
+        }
+        for (var motivo : new String[]{"STOCK_INSUFICIENTE", "PRECIO_DIFERENTE"}) {
+            metricas.counter("stockea.discrepancias.registradas", "motivo", motivo);
+        }
     }
 
     @Transactional
     public List<ResultadoOperacion> procesarOperaciones(
-            UUID negocioId, UUID dispositivoId, UUID cajeroId, UUID turnoCajaId,
-            SyncRequest request) {
+            UUID negocioId, UUID dispositivoId, UUID usuarioId, SyncRequest request) {
 
         var resultados = new ArrayList<ResultadoOperacion>();
 
@@ -89,12 +93,12 @@ public class SyncService {
 
             // Procesar la operación
             var comando = new ComandoOperacion(
-                    negocioId, dispositivoId, cajeroId, turnoCajaId,
+                    negocioId, dispositivoId, usuarioId,
                     op.operacionId(), op.fechaCliente(), op.payloadJson()
             );
             var resultado = procesador.procesar(comando);
 
-            // Si hubo discrepancias, guardar una por cada item con faltante
+            // Si hubo discrepancias, guardar una por cada item con faltante o con precio distinto
             for (var info : resultado.discrepancias()) {
                 var discrepancia = new DiscrepanciaEntity();
                 discrepancia.setId(UUID.randomUUID());
@@ -104,7 +108,7 @@ public class SyncService {
                 discrepancia.setItemVentaId(info.itemVentaId());
                 discrepancia.setProductoId(info.productoId());
                 discrepancia.setLoteId(info.loteId());
-                discrepancia.setMotivo("STOCK_INSUFICIENTE");
+                discrepancia.setMotivo(info.motivo());
                 discrepancia.setCantidadFaltante(info.cantidadFaltante());
                 discrepancia.setPrecioCobrado(info.precioCobrado());
                 discrepancia.setPrecioEsperado(info.precioEsperado());
@@ -118,7 +122,7 @@ public class SyncService {
             entidad.setNegocioId(negocioId);
             entidad.setOperacionId(op.operacionId());
             entidad.setDispositivoId(dispositivoId);
-            entidad.setUsuarioId(cajeroId);
+            entidad.setUsuarioId(usuarioId);
             entidad.setTipo(TipoOperacion.valueOf(op.tipo()));
             entidad.setSecuenciaDispositivo(op.secuenciaDispositivo());
             entidad.setEstado(resultado.estado());
@@ -137,12 +141,11 @@ public class SyncService {
     // Observabilidad: solo cuenta si la transacción hace COMMIT
     private void registrarMetricasYLog(String tipo, UUID operacionId, ResultadoOperacion resultado) {
         var estado = resultado.estado().name();
-        var faltantes = resultado.discrepancias().size();
+        var motivos = resultado.discrepancias().stream().map(ResultadoOperacion.DiscrepanciaInfo::motivo).toList();
         DespuesDelCommit.ejecutar(() -> {
             metricas.counter("stockea.sync.operaciones", "tipo", tipo, "estado", estado).increment();
-            if (faltantes > 0) {
-                metricas.counter("stockea.discrepancias.registradas", "motivo", "STOCK_INSUFICIENTE")
-                        .increment(faltantes);
+            for (var motivo : motivos) {
+                metricas.counter("stockea.discrepancias.registradas", "motivo", motivo).increment();
             }
             MDC.put("operacion_id", operacionId.toString());
             log.info("Operación {} {} procesada: {}", tipo, operacionId, estado);

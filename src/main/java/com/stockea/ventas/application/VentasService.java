@@ -1,5 +1,7 @@
 package com.stockea.ventas.application;
 
+import com.stockea.descuentos.api.DescuentosApi;
+import com.stockea.inventario.api.FraccionLote;
 import com.stockea.inventario.api.InventarioApi;
 import com.stockea.shared.tiempo.FechaNegocio;
 import com.stockea.ventas.domain.*;
@@ -23,6 +25,7 @@ import java.util.UUID;
 public class VentasService {
 
     private final InventarioApi inventarioApi;
+    private final DescuentosApi descuentosApi;
     private final VentaRepository ventaRepo;
     private final ItemVentaRepository itemRepo;
     private final AsignacionLoteRepository asignacionRepo;
@@ -31,10 +34,11 @@ public class VentasService {
     private final MeterRegistry metricas;
     private final ZoneId zonaNegocio = ZoneId.of("America/Bogota");
 
-    public VentasService(InventarioApi inventarioApi, VentaRepository ventaRepo,
+    public VentasService(InventarioApi inventarioApi, DescuentosApi descuentosApi, VentaRepository ventaRepo,
                          ItemVentaRepository itemRepo, AsignacionLoteRepository asignacionRepo,
                          Clock clock, ApplicationEventPublisher eventos, MeterRegistry metricas) {
         this.inventarioApi = inventarioApi;
+        this.descuentosApi = descuentosApi;
         this.ventaRepo = ventaRepo;
         this.itemRepo = itemRepo;
         this.asignacionRepo = asignacionRepo;
@@ -49,28 +53,62 @@ public class VentasService {
         }
     }
 
+    // Diferencia entre lo que el dispositivo cobró y lo que debió cobrar en una línea
+    public record DiferenciaPrecio(UUID itemVentaId, UUID productoId, BigDecimal cobrado, BigDecimal esperado) {}
+
+    public record Resultado(UUID ventaId, List<DiferenciaPrecio> diferencias) {}
+
+    // Tolerancia de redondeo: el peso colombiano no usa centavos
+    private static final BigDecimal TOLERANCIA = BigDecimal.ONE;
+
     @Transactional
-    public UUID registrarVenta(UUID negocioId, UUID dispositivoId, UUID cajeroId, UUID turnoCajaId,
-                               UUID operacionId, Instant fechaCliente,
-                               List<ItemCmd> items, MetodoPago metodoPago,
-                               BigDecimal montoRecibido, BigDecimal totalCliente) {
+    public Resultado registrarVenta(UUID negocioId, UUID dispositivoId, UUID cajeroId, UUID usuarioSyncId,
+                                    UUID turnoCajaId, UUID operacionId, Instant fechaCliente,
+                                    List<ItemCmd> items, MetodoPago metodoPago,
+                                    BigDecimal montoRecibido, BigDecimal totalCliente) {
         var fechaVenta = FechaNegocio.calcular(fechaCliente, clock, zonaNegocio);
 
         // Armar items con FEFO
         List<ItemVenta> itemsProcesados = new ArrayList<>();
+        List<DiferenciaPrecio> diferencias = new ArrayList<>();
+        List<FraccionLote> salidas = new ArrayList<>();
         for (var itemCmd : items) {
             var asignacion = inventarioApi.asignarFefo(
                     negocioId, itemCmd.productoId(), itemCmd.cantidad(), fechaVenta);
+            salidas.addAll(asignacion.fracciones());
 
-            var asignaciones = asignacion.fracciones().stream()
-                    .map(f -> new AsignacionLote(
-                            UUID.randomUUID(), f.loteId(), f.cantidad(),
-                            null, BigDecimal.ZERO, OrigenAsignacion.DISPOSITIVO))
-                    .toList();
+            // Precio que regía cuando se hizo la venta
+            var precioEsperado = inventarioApi.precioVigente(negocioId, itemCmd.productoId(), fechaCliente)
+                    .orElse(itemCmd.precioUnitario());
 
+            // Descuento REAL: el de los lotes que FEFO entregó, no el que el dispositivo supuso
+            var descuentosLote = descuentosApi.vigentesPorLote(negocioId,
+                    asignacion.fracciones().stream().map(FraccionLote::loteId).toList());
+            BigDecimal descuentoReal = BigDecimal.ZERO;
+            List<AsignacionLote> asignaciones = new ArrayList<>();
+            for (var f : asignacion.fracciones()) {
+                var d = descuentosLote.get(f.loteId());
+                var monto = d == null ? BigDecimal.ZERO
+                        : descuentosApi.calcularMonto(f.cantidad(), precioEsperado, d.porcentaje());
+                descuentoReal = descuentoReal.add(monto);
+                asignaciones.add(new AsignacionLote(UUID.randomUUID(), f.loteId(), f.cantidad(),
+                        d == null ? null : d.id(), monto, OrigenAsignacion.DISPOSITIVO));
+            }
+
+            // El servidor NO recalcula lo cobrado guarda lo que cobró el dispositivo
+            var descuentoCliente = itemCmd.descuento() == null ? BigDecimal.ZERO : itemCmd.descuento();
+            var sinCobertura = descuentoCliente.subtract(descuentoReal).max(BigDecimal.ZERO);
+
+            var itemId = UUID.randomUUID();
             itemsProcesados.add(new ItemVenta(
-                    UUID.randomUUID(), itemCmd.productoId(), itemCmd.cantidad(), itemCmd.precioUnitario(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, asignacion.sinCobertura(), asignaciones));
+                    itemId, itemCmd.productoId(), itemCmd.cantidad(), itemCmd.precioUnitario(),
+                    descuentoCliente, sinCobertura, asignacion.sinCobertura(), asignaciones));
+
+            var cobrado = itemCmd.cantidad().multiply(itemCmd.precioUnitario()).subtract(descuentoCliente);
+            var esperado = itemCmd.cantidad().multiply(precioEsperado).subtract(descuentoReal);
+            if (cobrado.subtract(esperado).abs().compareTo(TOLERANCIA) >= 0) {
+                diferencias.add(new DiferenciaPrecio(itemId, itemCmd.productoId(), cobrado, esperado));
+            }
         }
 
         // Armar el cmd y la venta
@@ -79,7 +117,7 @@ public class VentasService {
                 metodoPago, totalCliente, BigDecimal.ZERO, totalCliente,
                 montoRecibido, fechaCliente, List.of());
 
-        Venta venta = Venta.registrar(cmd, itemsProcesados, clock.instant());
+        Venta venta = Venta.registrar(cmd, itemsProcesados, clock.instant(), !diferencias.isEmpty());
 
         // Persistir VentaEntity
         var ventaEntity = new VentaEntity();
@@ -131,6 +169,9 @@ public class VentasService {
             }
         }
 
+        // Kardex: un movimiento VENTA por cada lote del que salió mercancía
+        inventarioApi.registrarSalidaPorVenta(negocioId, salidas, operacionId, usuarioSyncId);
+
         // Dentro de la transacción: Modulith lo guarda en el outbox y lo envía a RabbitMQ tras el COMMIT.
         eventos.publishEvent(new VentaRegistrada(
                 negocioId, venta.getId(), operacionId, venta.getEstado().name(), fechaVenta,
@@ -140,7 +181,7 @@ public class VentasService {
                         .toList()));
 
         registrarMetricas(venta);
-        return venta.getId();
+        return new Resultado(venta.getId(), diferencias);
     }
 
     // Métricas de negocio: ventas y pesos vendidos, solo tras el COMMIT
@@ -154,5 +195,5 @@ public class VentasService {
         });
     }
 
-    public record ItemCmd(UUID productoId, BigDecimal cantidad, BigDecimal precioUnitario) {}
+    public record ItemCmd(UUID productoId, BigDecimal cantidad, BigDecimal precioUnitario, BigDecimal descuento) {}
 }

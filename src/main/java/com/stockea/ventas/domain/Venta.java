@@ -51,6 +51,13 @@ public class Venta {
     }
 
     public static Venta registrar(RegistrarVentaCmd cmd, List<ItemVenta> itemsProcesados, Instant horaServidor) {
+        return registrar(cmd, itemsProcesados, horaServidor, false);
+    }
+
+    // hayDiferenciaDePrecio: el precio o el descuento cobrado no coincide con el vigente
+    // La venta se acepta igual, pero queda en DISCREPANCIA para que el supervisor la revise.
+    public static Venta registrar(RegistrarVentaCmd cmd, List<ItemVenta> itemsProcesados, Instant horaServidor,
+                                  boolean hayDiferenciaDePrecio) {
         if (cmd == null) throw new DomainException(ErrorDominio.COMANDO_VENTA_OBLIGATORIO);
         if (itemsProcesados == null) throw new DomainException(ErrorDominio.ITEMS_PROCESADOS_OBLIGATORIOS);
         if (horaServidor == null) throw new DomainException(ErrorDominio.HORA_SERVIDOR_OBLIGATORIA);
@@ -71,7 +78,7 @@ public class Venta {
 
         boolean hayDiscrepanciaStock = itemsProcesados.stream().anyMatch(ItemVenta::tieneDiscrepancia);
         boolean hayDiscrepanciaTotal = totalCalculado.compareTo(cmd.totalCliente()) != 0;
-        EstadoVenta nuevoEstado = (hayDiscrepanciaStock || hayDiscrepanciaTotal)
+        EstadoVenta nuevoEstado = (hayDiscrepanciaStock || hayDiscrepanciaTotal || hayDiferenciaDePrecio)
                 ? EstadoVenta.DISCREPANCIA : EstadoVenta.ACEPTADA;
 
         BigDecimal cambioCalculado = BigDecimal.ZERO;
