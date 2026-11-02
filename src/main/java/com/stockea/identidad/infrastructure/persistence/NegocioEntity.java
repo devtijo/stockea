@@ -50,4 +50,5 @@ public class NegocioEntity {
     public String getTipo() { return tipo; }
     public String getCiudad() { return ciudad; }
     public String getZonaHoraria() { return zonaHoraria; }
+    public BigDecimal getPorcentajeMaxDescuento() { return porcentajeMaxDescuento; }
 }
