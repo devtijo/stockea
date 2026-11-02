@@ -1,0 +1,198 @@
+import { useCallback, useEffect, useState } from 'react';
+import { api, entrar, iniciarSesion, mensajeDeError, salir } from './lib/auth';
+import { guardarCatalogo, perfilGuardado, prepararEquipoPara, type Perfil, type ProductoLocal } from './lib/db';
+import { ETIQUETA_ROL } from './lib/formato';
+import { reanudarSync, useSyncOutbox } from './SyncOutbox';
+import RegistroNegocio from './pantallas/RegistroNegocio';
+import Usuarios from './pantallas/Usuarios';
+import Vender from './pantallas/Vender';
+
+type Fase =
+    | { tipo: 'CARGANDO' }
+    | { tipo: 'BIENVENIDA' }
+    | { tipo: 'REGISTRO' }
+    | { tipo: 'LISTO'; perfil: Perfil; sinConexion: boolean }
+    | { tipo: 'BLOQUEADO'; mensaje: string };
+
+type Pestana = 'VENDER' | 'USUARIOS';
+
+/** Descarga el catálogo del negocio y lo deja en Dexie para vender sin internet. */
+async function descargarCatalogo(): Promise<void> {
+  const r = await api('/api/catalogo');
+  if (!r.ok) return;
+  const datos = (await r.json()) as Array<{ id: string; nombre: string; unidadVenta: string; precio: number; stock: number }>;
+  const productos: ProductoLocal[] = datos.map((p) => ({ ...p, precio: Number(p.precio), stock: Number(p.stock) }));
+  await guardarCatalogo(productos);
+}
+
+async function arrancar(): Promise<Fase> {
+  const sesion = await iniciarSesion();
+
+  if (sesion === 'SIN_CONEXION') {
+    // Sin internet se sigue vendiendo con el último perfil de este equipo.
+    const perfil = await perfilGuardado();
+    return perfil
+        ? { tipo: 'LISTO', perfil, sinConexion: true }
+        : { tipo: 'BLOQUEADO', mensaje: 'La primera vez se necesita internet para iniciar sesión en este equipo.' };
+  }
+  if (sesion === 'ANONIMO') return { tipo: 'BIENVENIDA' };
+
+  const r = await api('/api/yo');
+  if (!r.ok) return { tipo: 'BLOQUEADO', mensaje: await mensajeDeError(r) };
+  const perfil = (await r.json()) as Perfil;
+  try {
+    await prepararEquipoPara(perfil);
+  } catch (e) {
+    return { tipo: 'BLOQUEADO', mensaje: e instanceof Error ? e.message : 'Equipo en uso por otro negocio.' };
+  }
+  await descargarCatalogo().catch(() => undefined); // si falla, queda el catálogo anterior
+  reanudarSync();
+  return { tipo: 'LISTO', perfil, sinConexion: false };
+}
+
+export default function App() {
+  const [fase, setFase] = useState<Fase>({ tipo: 'CARGANDO' });
+  const [pestana, setPestana] = useState<Pestana>('VENDER');
+
+  useEffect(() => {
+    void arrancar().then(setFase);
+  }, []);
+
+  const actualizarCatalogo = useCallback(() => void descargarCatalogo().catch(() => undefined), []);
+
+  if (fase.tipo === 'CARGANDO') {
+    return <div className="pantalla-centro"><p className="sub">Cargando…</p></div>;
+  }
+  if (fase.tipo === 'BIENVENIDA' || fase.tipo === 'REGISTRO') {
+    return (
+        <div className="app">
+          <header className="cabecera">
+            <div>
+              <h1 className="marca">Stockea</h1>
+              <p className="sub">Punto de venta para tiendas de barrio, también sin internet</p>
+            </div>
+          </header>
+          {fase.tipo === 'REGISTRO' ? (
+              <RegistroNegocio alVolver={() => setFase({ tipo: 'BIENVENIDA' })} />
+          ) : (
+              <section className="tarjeta tarjeta--centro">
+                <h2>Bienvenido</h2>
+                <p>Si su negocio ya usa Stockea, inicie sesión con su documento. Si es nuevo, regístrelo en un minuto.</p>
+                <div className="acciones">
+                  <button type="button" className="texto" onClick={() => setFase({ tipo: 'REGISTRO' })}>
+                    Registrar mi negocio
+                  </button>
+                  <button type="button" className="primario" onClick={entrar}>
+                    Iniciar sesión
+                  </button>
+                </div>
+              </section>
+          )}
+        </div>
+    );
+  }
+  if (fase.tipo === 'BLOQUEADO') {
+    return (
+        <div className="pantalla-centro">
+          <section className="tarjeta tarjeta--centro">
+            <h2>No se puede continuar</h2>
+            <p>{fase.mensaje}</p>
+            <div className="acciones">
+              <button type="button" className="primario" onClick={salir}>
+                Cambiar de usuario
+              </button>
+            </div>
+          </section>
+        </div>
+    );
+  }
+  return <Caja perfil={fase.perfil} sinConexionAlAbrir={fase.sinConexion} pestana={pestana} setPestana={setPestana}
+               actualizarCatalogo={actualizarCatalogo} />;
+}
+
+interface CajaProps {
+  perfil: Perfil;
+  sinConexionAlAbrir: boolean;
+  pestana: Pestana;
+  setPestana: (p: Pestana) => void;
+  actualizarCatalogo: () => void;
+}
+
+function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatalogo }: CajaProps) {
+  const sync = useSyncOutbox();
+  const esAdmin = perfil.rol === 'ADMINISTRADOR';
+
+  // Tras cada sincronización el servidor ya descontó stock: se refresca la referencia local.
+  useEffect(() => {
+    if (sync.ultimaSync) actualizarCatalogo();
+  }, [sync.ultimaSync, actualizarCatalogo]);
+
+  // Abrió sin internet y volvió la conexión: hay que iniciar sesión para enviar la cola.
+  const debeEntrar = (sinConexionAlAbrir && sync.online) || sync.pausa !== null;
+
+  const estadoConexion = !sync.online ? 'offline' : sync.servidorResponde ? 'online' : 'sin-servidor';
+  const etiquetaConexion = {
+    online: 'En línea',
+    'sin-servidor': 'En línea · servidor no responde',
+    offline: 'Modo offline',
+  }[estadoConexion];
+
+  return (
+      <div className="app">
+        <header className="cabecera">
+          <div>
+            <h1 className="marca">Stockea</h1>
+            <p className="sub">
+              {perfil.negocio} · {perfil.nombre} ({ETIQUETA_ROL[perfil.rol]})
+            </p>
+          </div>
+          <div className="cabecera__lado">
+            <div className={`conexion conexion--${estadoConexion}`} role="status" aria-live="polite">
+              <span className="punto" aria-hidden="true" />
+              <strong>{etiquetaConexion}</strong>
+              <span className="conexion__detalle">
+              {sync.pendientes} en cola{sync.fallidas > 0 ? ` · ${sync.fallidas} fallida(s)` : ''}
+            </span>
+            </div>
+            <button type="button" className="texto" onClick={salir} disabled={!sync.online}
+                    title={sync.online ? 'Cerrar sesión' : 'Sin internet no se puede cerrar sesión'}>
+              Salir
+            </button>
+          </div>
+        </header>
+
+        {debeEntrar && sync.online && (
+            <p className="aviso aviso--barra" role="alert">
+              {sync.pausa === 'ACCESO_REVOCADO'
+                  ? 'Este usuario o equipo fue bloqueado. Las ventas siguen guardadas; un administrador debe iniciar sesión.'
+                  : 'Inicie sesión para enviar las ventas guardadas.'}{' '}
+              <button type="button" className="texto" onClick={sync.pausa === 'ACCESO_REVOCADO' ? salir : entrar}>
+                {sync.pausa === 'ACCESO_REVOCADO' ? 'Cambiar de usuario' : 'Iniciar sesión'}
+              </button>
+            </p>
+        )}
+
+        {esAdmin && (
+            <nav className="pestanas" aria-label="Secciones">
+              <button type="button" aria-current={pestana === 'VENDER' ? 'page' : undefined} onClick={() => setPestana('VENDER')}>
+                Vender
+              </button>
+              <button type="button" aria-current={pestana === 'USUARIOS' ? 'page' : undefined} onClick={() => setPestana('USUARIOS')}>
+                Usuarios
+              </button>
+            </nav>
+        )}
+
+        {pestana === 'USUARIOS' && esAdmin ? (
+            <Usuarios perfil={perfil} online={sync.online && !sinConexionAlAbrir} />
+        ) : (
+            <Vender sync={sync} alActualizarCatalogo={actualizarCatalogo} />
+        )}
+
+        <footer className="pie-estado">
+          <span>{sync.mensaje}</span>
+          <span>Última sincronización: {sync.ultimaSync ? sync.ultimaSync.toLocaleTimeString('es-CO') : '—'}</span>
+        </footer>
+      </div>
+  );
+}
