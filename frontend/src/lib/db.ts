@@ -19,9 +19,9 @@ export interface ItemVentaLocal {
 }
 
 export interface VentaLocal {
-    operacionId: string;
-    secuencia: number;
-    fechaCliente: string;
+    operacionId: string; // UUID v7 generado aquí (ADR-002)
+    secuencia: number; // secuenciaDispositivo
+    fechaCliente: string; // ISO-8601
     metodoPago: MetodoPago;
     items: ItemVentaLocal[];
     total: number;
@@ -48,13 +48,36 @@ interface Meta {
     valor: string;
 }
 
-// Base local. durability 'strict' = la transacción solo confirma cuando el
-// navegador escribió a disco
+// Producto del catálogo del negocio, descargado de GET /api/catalogo
+export interface ProductoLocal {
+    id: string;
+    nombre: string;
+    unidadVenta: string;
+    precio: number; // pesos enteros
+    stock: number; // referencia al momento de descargar; la verdad está en el servidor (ADR-002)
+}
+
+export type Rol = 'CAJERO' | 'SUPERVISOR' | 'ADMINISTRADOR';
+
+// Lo que devuelve GET /api/yo. Se guarda para poder abrir la caja sin internet
+export interface Perfil {
+    usuarioId: string;
+    nombre: string;
+    rol: Rol;
+    negocioId: string;
+    negocio: string;
+    zonaHoraria: string;
+}
+
+
+// Base local. durability 'strict' = la transacción solo confirma cuando el navegador escribió a disco
+
 
 export const db = new Dexie('stockea', { chromeTransactionDurability: 'strict' }) as Dexie & {
     ventas: EntityTable<VentaLocal, 'operacionId'>;
     outbox: EntityTable<OperacionOutbox, 'operacionId'>;
     meta: EntityTable<Meta, 'clave'>;
+    productos: EntityTable<ProductoLocal, 'id'>;
 };
 
 db.version(1).stores({
@@ -63,7 +86,13 @@ db.version(1).stores({
     meta: 'clave',
 });
 
-// Pide al navegador que no borre IndexedDB cuando falte espacio
+db.version(2).stores({
+    ventas: 'operacionId, secuencia, estado',
+    outbox: 'operacionId, secuencia, estado',
+    meta: 'clave',
+    productos: 'id, nombre',
+});
+
 if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
     void navigator.storage.persist();
 }
@@ -77,8 +106,8 @@ export function uuidv7(): string {
     for (let i = 0; i < 6; i++) {
         b[i] = Math.floor(ms / 2 ** (8 * (5 - i))) % 256;
     }
-    b[6] = (b[6] & 0x0f) | 0x70;
-    b[8] = (b[8] & 0x3f) | 0x80;
+    b[6] = (b[6] & 0x0f) | 0x70; // versión 7
+    b[8] = (b[8] & 0x3f) | 0x80; // variante RFC 4122
     const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
@@ -145,11 +174,48 @@ export async function registrarVentaLocal(nueva: NuevaVenta): Promise<VentaLocal
     });
 }
 
-// Identificador estable de este equipo (se crea la primera vez)
+/** Identificador estable de este equipo (se crea la primera vez). */
 export async function dispositivoId(): Promise<string> {
     const existente = await db.meta.get('dispositivoId');
     if (existente) return existente.valor;
     const nuevo = uuidv7();
     await db.meta.put({ clave: 'dispositivoId', valor: nuevo });
     return nuevo;
+}
+
+// Perfil y catálogo
+
+export async function perfilGuardado(): Promise<Perfil | null> {
+    const fila = await db.meta.get('perfil');
+    return fila ? (JSON.parse(fila.valor) as Perfil) : null;
+}
+
+/**
+ * Deja el equipo listo para el negocio que inició sesión. Si el equipo era de
+ * OTRO negocio, se borran sus datos locales, salvo que tenga ventas sin enviar:
+ * en ese caso se bloquea, porque esas ventas no se pueden mandar con otra cuenta.
+ */
+export async function prepararEquipoPara(perfil: Perfil): Promise<void> {
+    await db.transaction('rw', [db.ventas, db.outbox, db.meta, db.productos], async () => {
+        const anterior = await perfilGuardado();
+        if (anterior && anterior.negocioId !== perfil.negocioId) {
+            const sinEnviar = await db.outbox.count();
+            if (sinEnviar > 0) {
+                throw new Error(
+                    `Este equipo tiene ${sinEnviar} venta(s) sin enviar de "${anterior.negocio}". ` +
+                    'Inicie sesión con una cuenta de ese negocio para enviarlas primero.',
+                );
+            }
+            await db.ventas.clear();
+            await db.productos.clear();
+        }
+        await db.meta.put({ clave: 'perfil', valor: JSON.stringify(perfil) });
+    });
+}
+
+export async function guardarCatalogo(productos: ProductoLocal[]): Promise<void> {
+    await db.transaction('rw', db.productos, async () => {
+        await db.productos.clear();
+        await db.productos.bulkPut(productos);
+    });
 }

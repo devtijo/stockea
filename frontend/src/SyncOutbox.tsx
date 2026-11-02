@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type EstadoVentaLocal, type OperacionOutbox } from './lib/db';
-
+import { db, dispositivoId, type EstadoVentaLocal, type OperacionOutbox } from './lib/db';
+import { obtenerToken } from './lib/auth';
 
 // La SyncOutbox es el ÚNICO código que habla con el backend
 // Online y offline usan el mismo camino: la venta ya está en Dexie; esto solo
@@ -14,7 +14,7 @@ const INTERVALO_MS = 10_000;
 
 interface ResultadoServidor {
     operacionId: string;
-    estado: string; // ACEPTADA | REASIGNADA | DISCREPANCIA | RECHAZADA
+    estado: string; // ACEPTADA | REASIGNADA | DISCREPANCIA | RECHAZADA_...
     resultadoId: string | null;
 }
 
@@ -25,29 +25,34 @@ export type TipoDrenado =
     | 'ESPERANDO'
     | 'SERVIDOR_NO_RESPONDE'
     | 'REAUTENTICAR'
+    | 'ACCESO_REVOCADO'
     | 'OCUPADO';
 
 export interface ResultadoDrenado {
     tipo: TipoDrenado;
     mensaje: string;
 }
+
+// Pide un drenado inmediato (por ejemplo, justo después de cobrar)
 export function solicitarSync(): void {
     window.dispatchEvent(new Event(EVENTO_DRENAR));
 }
 
-// política
+//política
 
-type Accion = 'OK' | 'REINTENTAR' | 'REAUTENTICAR' | 'FALLIDA';
+type Accion = 'OK' | 'REINTENTAR' | 'REAUTENTICAR' | 'ACCESO_REVOCADO' | 'FALLIDA';
+
 
 function clasificar(status: number | undefined): Accion {
     if (status === undefined) return 'REINTENTAR'; // red caída / timeout
     if (status === 200) return 'OK';
     if (status === 401) return 'REAUTENTICAR';
+    if (status === 403) return 'ACCESO_REVOCADO'; // usuario inhabilitado o equipo bloqueado
     if (status === 429 || status >= 500) return 'REINTENTAR';
     return 'FALLIDA'; // 400, 403, 422...
 }
 
-/** Backoff exponencial con jitter, tope 60 s. */
+// Backoff exponencial con jitter, tope 60 s.
 function espera(intentos: number): number {
     return Math.min(60_000, 1000 * 2 ** intentos) * (0.5 + Math.random() / 2);
 }
@@ -61,7 +66,18 @@ function estadoLocal(estadoServidor: string): EstadoVentaLocal {
 // envío
 
 let drenandoEnEstaPestana = false;
-let pausadoPorAutenticacion = false;
+let pausa: 'REAUTENTICAR' | 'ACCESO_REVOCADO' | null = null;
+
+const MENSAJE_PAUSA = {
+    REAUTENTICAR: 'Sesión vencida. Inicie sesión de nuevo (las ventas se conservan).',
+    ACCESO_REVOCADO: 'Este usuario o equipo fue bloqueado. Un administrador debe iniciar sesión (las ventas se conservan).',
+} as const;
+
+// Tras un nuevo inicio de sesión, la cola vuelve a intentar
+export function reanudarSync(): void {
+    pausa = null;
+    solicitarSync();
+}
 
 async function enviar(lote: OperacionOutbox[]): Promise<Accion> {
     const cuerpo = {
@@ -74,11 +90,21 @@ async function enviar(lote: OperacionOutbox[]): Promise<Accion> {
         })),
     };
 
+    const token = await obtenerToken();
+    if (!token) {
+        pausa = 'REAUTENTICAR';
+        return 'REAUTENTICAR';
+    }
+
     let respuesta: Response;
     try {
         respuesta = await fetch(ENDPOINT, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+                'X-Dispositivo-Id': await dispositivoId(),
+            },
             body: JSON.stringify(cuerpo),
             signal: AbortSignal.timeout(15_000),
         });
@@ -94,11 +120,11 @@ async function enviar(lote: OperacionOutbox[]): Promise<Accion> {
         await aplicarResultados(datos.resultados);
     } else if (accion === 'REINTENTAR') {
         await programarReintento(lote, `HTTP ${respuesta.status}`);
-    } else if (accion === 'REAUTENTICAR') {
-        pausadoPorAutenticacion = true; // nada se borra: la cola espera
+    } else if (accion === 'REAUTENTICAR' || accion === 'ACCESO_REVOCADO') {
+        pausa = accion; // nada se borra: la cola espera a otra sesión
     } else if (lote.length > 1) {
         // Un 4xx en un lote: se reenvía de a una para aislar la operación
-        // envenenada; las demás no deben quedar bloqueadas
+        // envenenada; las demás no deben quedar bloqueadas (ADR-022).
         for (const op of lote) await enviar([op]);
     } else {
         await db.outbox.update(lote[0].operacionId, {
@@ -144,7 +170,7 @@ async function drenarCola(): Promise<ResultadoDrenado> {
                 ? { tipo: 'SINCRONIZADO', mensaje: `${enviadas} operación(es) sincronizada(s).` }
                 : { tipo: 'NADA', mensaje: 'Todo sincronizado.' };
         }
-        // Se respeta el orden: si la primera está en espera, todas esperan
+        // Se respeta el orden: si la primera está en espera, todas esperan.
         if (pendientes[0].proximoIntento > Date.now()) {
             return { tipo: 'ESPERANDO', mensaje: 'Reintentando en unos segundos...' };
         }
@@ -153,8 +179,8 @@ async function drenarCola(): Promise<ResultadoDrenado> {
         if (accion === 'REINTENTAR') {
             return { tipo: 'SERVIDOR_NO_RESPONDE', mensaje: 'El servidor no responde. Las ventas siguen guardadas.' };
         }
-        if (accion === 'REAUTENTICAR') {
-            return { tipo: 'REAUTENTICAR', mensaje: 'Sesión vencida. Inicie sesión de nuevo (la cola se conserva).' };
+        if (accion === 'REAUTENTICAR' || accion === 'ACCESO_REVOCADO') {
+            return { tipo: accion, mensaje: MENSAJE_PAUSA[accion] };
         }
         enviadas += lote.length;
     }
@@ -165,9 +191,7 @@ export async function drenarOutbox(): Promise<ResultadoDrenado> {
     if (!navigator.onLine) {
         return { tipo: 'OFFLINE', mensaje: 'MODO OFFLINE: las ventas se guardan en este equipo.' };
     }
-    if (pausadoPorAutenticacion) {
-        return { tipo: 'REAUTENTICAR', mensaje: 'Sesión vencida. Inicie sesión de nuevo (la cola se conserva).' };
-    }
+    if (pausa) return { tipo: pausa, mensaje: MENSAJE_PAUSA[pausa] };
     if (drenandoEnEstaPestana) return { tipo: 'OCUPADO', mensaje: 'Sincronizando...' };
 
     drenandoEnEstaPestana = true;
@@ -192,6 +216,7 @@ export async function drenarOutbox(): Promise<ResultadoDrenado> {
 export interface EstadoSync {
     online: boolean;
     servidorResponde: boolean;
+    pausa: 'REAUTENTICAR' | 'ACCESO_REVOCADO' | null;
     pendientes: number;
     fallidas: number;
     mensaje: string;
@@ -199,12 +224,12 @@ export interface EstadoSync {
 }
 
 
-// Dispara el drenado al montar, al volver la conexión, cada 10 s y cuando
-// alguien llama solicitarSync(). `online` informa; no cambia cómo se vende.
-
+//Dispara el drenado al montar, al volver la conexión, cada 10 s y cuando
+// alguien llama solicitarSync(). `online` informa; no cambia cómo se vende
 export function useSyncOutbox(): EstadoSync {
     const [online, setOnline] = useState(navigator.onLine);
     const [servidorResponde, setServidorResponde] = useState(true);
+    const [pausaActual, setPausaActual] = useState<EstadoSync['pausa']>(null);
     const [mensaje, setMensaje] = useState('Listo.');
     const [ultimaSync, setUltimaSync] = useState<Date | null>(null);
 
@@ -219,6 +244,7 @@ export function useSyncOutbox(): EstadoSync {
             if (!vivo || r.tipo === 'OCUPADO') return;
             setMensaje(r.mensaje);
             setServidorResponde(r.tipo !== 'SERVIDOR_NO_RESPONDE');
+            setPausaActual(r.tipo === 'REAUTENTICAR' || r.tipo === 'ACCESO_REVOCADO' ? r.tipo : null);
             if (r.tipo === 'SINCRONIZADO') setUltimaSync(new Date());
         };
         const alConectar = () => {
@@ -246,5 +272,5 @@ export function useSyncOutbox(): EstadoSync {
         };
     }, []);
 
-    return { online, servidorResponde, pendientes, fallidas, mensaje, ultimaSync };
+    return { online, servidorResponde, pausa: pausaActual, pendientes, fallidas, mensaje, ultimaSync };
 }
