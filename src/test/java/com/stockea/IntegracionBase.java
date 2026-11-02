@@ -142,7 +142,7 @@ public abstract class IntegracionBase {
         if (migrador == null) {
             migrador = new JdbcTemplate(new DriverManagerDataSource(jdbcUrl(), "stockea_migrator", "test"));
         }
-        migrador.execute("TRUNCATE venta_diaria_producto, evento_consumido, event_publication, discrepancia, asignacion_lote, item_venta, venta, movimiento_inventario, "
+        migrador.execute("TRUNCATE turno_caja, descuento, venta_diaria_producto, evento_consumido, event_publication, discrepancia, asignacion_lote, item_venta, venta, movimiento_inventario, "
                 + "operacion_sync, historial_precio, lote, producto, dispositivo, consentimiento, usuario, negocio CASCADE");
         proveedor.reiniciar();
         vaciarColas();
@@ -210,7 +210,7 @@ public abstract class IntegracionBase {
             throws Exception {
         var total = String.valueOf(cantidad * precio);
         var payload = jsonMapper.writeValueAsString(java.util.Map.of(
-                "metodoPago", "EFECTIVO", "montoRecibido", total, "totalCliente", total,
+                "turnoId", UUID.randomUUID().toString(), "metodoPago", "EFECTIVO", "montoRecibido", total, "totalCliente", total,
                 "items", java.util.List.of(java.util.Map.of("productoId", producto.toString(),
                         "cantidad", String.valueOf(cantidad), "precioUnitario", String.valueOf(precio)))));
         var cuerpo = jsonMapper.writeValueAsString(java.util.Map.of("operaciones", java.util.List.of(java.util.Map.of(
@@ -219,10 +219,42 @@ public abstract class IntegracionBase {
         return post("/api/sync/operaciones", sesion.token(), cuerpo, "X-Dispositivo-Id", UUID.randomUUID().toString());
     }
 
+    // Envía varias operaciones de un mismo dispositivo en un solo lote de sincronización
+    protected HttpResponse<String> sincronizar(Sesion sesion, UUID dispositivo, java.util.List<?> operaciones)
+            throws Exception {
+        var cuerpo = jsonMapper.writeValueAsString(java.util.Map.of("operaciones", operaciones));
+        return post("/api/sync/operaciones", sesion.token(), cuerpo, "X-Dispositivo-Id", dispositivo.toString());
+    }
+
+    // Una operación de la cola del dispositivo, con su payload ya convertido a JSON
+    protected java.util.Map<String, Object> operacion(String tipo, long secuencia, Object payload) {
+        return operacion(tipo, secuencia, payload, Instant.now().minusSeconds(5));
+    }
+
+    protected java.util.Map<String, Object> operacion(String tipo, long secuencia, Object payload, Instant fechaCliente) {
+        return java.util.Map.of("operacionId", UUID.randomUUID().toString(), "secuenciaDispositivo", secuencia,
+                "tipo", tipo, "fechaCliente", fechaCliente.toString(),
+                "payloadJson", jsonMapper.writeValueAsString(payload));
+    }
+
+    // Payload de una venta de un solo producto, como lo arma el dispositivo
+    protected java.util.Map<String, Object> venta(UUID turno, UUID cajero, String metodo, UUID producto,
+                                                  String cantidad, String precio, String descuento) {
+        var total = new java.math.BigDecimal(cantidad).multiply(new java.math.BigDecimal(precio))
+                .subtract(new java.math.BigDecimal(descuento));
+        return java.util.Map.of("turnoId", turno.toString(), "cajeroId", cajero.toString(), "metodoPago", metodo,
+                "montoRecibido", total.toPlainString(), "totalCliente", total.toPlainString(),
+                "items", java.util.List.of(java.util.Map.of("productoId", producto.toString(), "cantidad", cantidad,
+                        "precioUnitario", precio, "descuento", descuento)));
+    }
+
+    // Estado (ACEPTADA, DISCREPANCIA, ...) de la operación i en la respuesta de /api/sync
+    protected String estado(HttpResponse<String> r, int i) {
+        return jsonMapper.readTree(r.body()).get("resultados").get(i).get("estado").asString();
+    }
+
     @Value("${local.management.port}")
     protected int puertoGestion;
-
-    /** Texto de /actuator/prometheus (puerto interno de gestión). */
     protected String metricas() throws Exception {
         var req = HttpRequest.newBuilder(URI.create("http://localhost:" + puertoGestion + "/actuator/prometheus")).build();
         return http.send(req, HttpResponse.BodyHandlers.ofString()).body();
@@ -235,6 +267,12 @@ public abstract class IntegracionBase {
     protected HttpResponse<String> post(String ruta, String token, String json, String... cabeceras) throws Exception {
         var req = solicitud(ruta, token, cabeceras).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json));
+        return http.send(req.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    protected HttpResponse<String> put(String ruta, String token, String json) throws Exception {
+        var req = solicitud(ruta, token).header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(json));
         return http.send(req.build(), HttpResponse.BodyHandlers.ofString());
     }
 

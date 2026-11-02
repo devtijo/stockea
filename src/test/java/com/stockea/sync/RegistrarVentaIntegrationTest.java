@@ -31,6 +31,7 @@ class RegistrarVentaIntegrationTest extends IntegracionBase {
 
     private static final LocalDate HOY = LocalDate.now(ZoneId.of("America/Bogota"));
     private static final UUID DISPOSITIVO = UUID.randomUUID();
+    private static final UUID TURNO = UUID.randomUUID();
 
     @Autowired JsonMapper json;
 
@@ -267,6 +268,7 @@ class RegistrarVentaIntegrationTest extends IntegracionBase {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         var payload = Map.of(
+                "turnoId", TURNO.toString(),
                 "metodoPago", TestConstants.METODO_PAGO_EFECTIVO,
                 "montoRecibido", total.add(new BigDecimal("10000")).toPlainString(),
                 "totalCliente", total.toPlainString(),

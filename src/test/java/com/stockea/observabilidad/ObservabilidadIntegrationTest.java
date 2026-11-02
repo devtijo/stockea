@@ -31,7 +31,7 @@ class ObservabilidadIntegrationTest extends IntegracionBase {
         assertThat(diferencia(antes, despues, "stockea_ventas_total", "estado=\"DISCREPANCIA\"")).isEqualTo(1.0);
         assertThat(diferencia(antes, despues, "stockea_ventas_pesos_total", "metodo_pago=\"EFECTIVO\""))
                 .isEqualTo(7500.0);
-        assertThat(diferencia(antes, despues, "stockea_discrepancias_registradas_total", "motivo=")).isEqualTo(1.0);
+        assertThat(diferencia(antes, despues, "stockea_discrepancias_registradas_total", "motivo=\"STOCK_INSUFICIENTE\"")).isEqualTo(1.0);
     }
 
     private static double diferencia(String antes, String despues, String metrica, String etiqueta) {
