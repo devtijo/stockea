@@ -1,7 +1,6 @@
 package com.stockea.sync.application;
 
 import com.stockea.sync.api.ComandoOperacion;
-import com.stockea.sync.api.EstadoOperacion;
 import com.stockea.sync.api.ProcesadorOperacion;
 import com.stockea.sync.api.ResultadoOperacion;
 import com.stockea.sync.api.TipoOperacion;
@@ -79,14 +78,14 @@ public class SyncService {
             );
             var resultado = procesador.procesar(comando);
 
-            // Si hubo discrepancia, guardarla
-            if (resultado.estado() == EstadoOperacion.DISCREPANCIA && resultado.discrepancia() != null) {
-                var info = resultado.discrepancia();
+            // Si hubo discrepancias, guardar una por cada item con faltante
+            for (var info : resultado.discrepancias()) {
                 var discrepancia = new DiscrepanciaEntity();
                 discrepancia.setId(UUID.randomUUID());
                 discrepancia.setNegocioId(negocioId);
                 discrepancia.setOperacionId(op.operacionId());
                 discrepancia.setVentaId(resultado.resultadoId());
+                discrepancia.setItemVentaId(info.itemVentaId());
                 discrepancia.setProductoId(info.productoId());
                 discrepancia.setLoteId(info.loteId());
                 discrepancia.setMotivo("STOCK_INSUFICIENTE");

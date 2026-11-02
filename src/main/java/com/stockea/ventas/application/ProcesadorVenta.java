@@ -55,24 +55,20 @@ public class ProcesadorVenta implements ProcesadorOperacion {
                 metodo, payload.montoRecibido(), payload.totalCliente()
         );
 
-        var itemConFaltante = itemVentaRepo.findAll().stream()
-                .filter(i -> i.getVentaId().equals(ventaId))
+        // Una discrepancia por CADA item que no alcanzó a cubrirse con stock (ADR-002)
+        var discrepancias = itemVentaRepo.findByVentaIdOrderByLinea(ventaId).stream()
                 .filter(i -> i.getCantidadSinCobertura() != null && i.getCantidadSinCobertura().signum() > 0)
-                .findFirst();
+                .map(i -> new ResultadoOperacion.DiscrepanciaInfo(
+                        i.getId(),
+                        i.getProductoId(),
+                        null, // loteId: el faltante no tiene lote asignado
+                        i.getCantidadSinCobertura(),
+                        i.getPrecioUnitario(),
+                        i.getPrecioUnitario()))
+                .toList();
 
-        if (itemConFaltante.isPresent()) {
-            var item = itemConFaltante.get();
-            var info = new ResultadoOperacion.DiscrepanciaInfo(
-                    item.getProductoId(),
-                    null, // loteId: el faltante no tiene lote asignado
-                    item.getCantidadSinCobertura(),
-                    item.getPrecioUnitario(),
-                    item.getPrecioUnitario()
-            );
-            return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.DISCREPANCIA, ventaId, info);
-        }
-
-        return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.ACEPTADA, ventaId, null);
+        var estado = discrepancias.isEmpty() ? EstadoOperacion.ACEPTADA : EstadoOperacion.DISCREPANCIA;
+        return new ResultadoOperacion(cmd.operacionId(), estado, ventaId, discrepancias);
     }
 
     public record VentaPayload(
