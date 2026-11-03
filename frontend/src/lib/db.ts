@@ -16,6 +16,7 @@ export interface ItemVentaLocal {
     nombre: string;
     cantidad: number; // unidades enteras
     precioUnitario: number; // pesos enteros
+    descuento: number; // pesos descontados en la línea (0 si no hay)
 }
 
 export interface VentaLocal {
@@ -29,12 +30,13 @@ export interface VentaLocal {
     cambio: number;
     estado: EstadoVentaLocal;
     resultadoId?: string; // id de la venta en el servidor
+    turnoId: string;
 }
 
 export interface OperacionOutbox {
     operacionId: string;
     secuencia: number;
-    tipo: 'VENTA';
+    tipo: 'VENTA' | 'ABRIR_TURNO' | 'CERRAR_TURNO';
     fechaCliente: string;
     payloadJson: string; // el backend espera un STRING con el JSON serializado
     estado: 'PENDIENTE' | 'FALLIDA';
@@ -55,6 +57,21 @@ export interface ProductoLocal {
     unidadVenta: string;
     precio: number; // pesos enteros
     stock: number; // referencia al momento de descargar; la verdad está en el servidor (ADR-002)
+    // Descuento del lote que FEFO venderá primero y cuántas unidades le quedan
+    descuento: { porcentaje: number; unidades: number } | null;
+}
+
+// Turno de caja de ESTE equipo. Se abre y se cierra sin internet (ADR-025)
+export interface TurnoLocal {
+    id: string;
+    cajeroId: string;
+    cajero: string;
+    montoInicial: number;
+    abiertoEn: string;
+    estado: 'ABIERTO' | 'CERRADO';
+    cerradoEn?: string;
+    montoContado?: number;
+    efectivoEsperado?: number;
 }
 
 export type Rol = 'CAJERO' | 'SUPERVISOR' | 'ADMINISTRADOR';
@@ -67,6 +84,8 @@ export interface Perfil {
     negocioId: string;
     negocio: string;
     zonaHoraria: string;
+    // Material para verificar el PIN sin internet (PBKDF2, nunca el PIN en claro)
+    pin: { sal: string; iteraciones: number; hash: string } | null;
 }
 
 
@@ -78,6 +97,7 @@ export const db = new Dexie('stockea', { chromeTransactionDurability: 'strict' }
     outbox: EntityTable<OperacionOutbox, 'operacionId'>;
     meta: EntityTable<Meta, 'clave'>;
     productos: EntityTable<ProductoLocal, 'id'>;
+    turnos: EntityTable<TurnoLocal, 'id'>;
 };
 
 db.version(1).stores({
@@ -91,6 +111,14 @@ db.version(2).stores({
     outbox: 'operacionId, secuencia, estado',
     meta: 'clave',
     productos: 'id, nombre',
+});
+
+db.version(3).stores({
+    ventas: 'operacionId, secuencia, estado, turnoId',
+    outbox: 'operacionId, secuencia, estado',
+    meta: 'clave',
+    productos: 'id, nombre',
+    turnos: 'id, estado, abiertoEn',
 });
 
 if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
@@ -112,6 +140,98 @@ export function uuidv7(): string {
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
+// Cada operación de la cola lleva la siguiente secuencia del dispositivo.
+// Se llama SIEMPRE dentro de una transacción que incluya meta y outbox.
+async function encolar(tipo: OperacionOutbox['tipo'], operacionId: string, fechaCliente: string,
+                       payload: object): Promise<number> {
+    const actual = await db.meta.get('secuenciaDispositivo');
+    const secuencia = Number(actual?.valor ?? '0') + 1;
+    await db.meta.put({ clave: 'secuenciaDispositivo', valor: String(secuencia) });
+    await db.outbox.add({
+        operacionId,
+        secuencia,
+        tipo,
+        fechaCliente,
+        payloadJson: JSON.stringify(payload),
+        estado: 'PENDIENTE',
+        intentos: 0,
+        proximoIntento: 0,
+    });
+    return secuencia;
+}
+
+// Descuento de una línea: solo las unidades que quedan en el lote con descuento.
+// Si se venden más, el resto va a precio normal (el servidor lo verifica con FEFO).
+export function descuentoLinea(producto: ProductoLocal | undefined, cantidad: number): number {
+    if (!producto?.descuento) return 0;
+    const unidades = Math.min(cantidad, producto.descuento.unidades);
+    return Math.round((unidades * producto.precio * producto.descuento.porcentaje) / 100);
+}
+
+// Turnos de caja
+
+export async function turnoAbierto(): Promise<TurnoLocal | null> {
+    return (await db.turnos.where('estado').equals('ABIERTO').first()) ?? null;
+}
+
+export async function abrirTurnoLocal(perfil: Perfil, montoInicial: number): Promise<TurnoLocal> {
+    if (!Number.isInteger(montoInicial) || montoInicial < 0) throw new Error('El monto inicial no es válido.');
+    return db.transaction('rw', [db.turnos, db.outbox, db.meta], async () => {
+        if (await turnoAbierto()) throw new Error('Ya hay una caja abierta en este equipo.');
+        const turno: TurnoLocal = {
+            id: uuidv7(),
+            cajeroId: perfil.usuarioId,
+            cajero: perfil.nombre,
+            montoInicial,
+            abiertoEn: new Date().toISOString(),
+            estado: 'ABIERTO',
+        };
+        await db.turnos.add(turno);
+        await encolar('ABRIR_TURNO', uuidv7(), turno.abiertoEn, {
+            turnoId: turno.id,
+            cajeroId: turno.cajeroId,
+            montoInicial: String(montoInicial),
+        });
+        return turno;
+    });
+}
+
+export interface ResumenTurnoLocal {
+    ventas: number;
+    efectivo: number;
+    otros: number;
+    efectivoEsperado: number;
+}
+
+// Lo que dice ESTE equipo. El cuadre oficial lo calcula el servidor al recibir el cierre.
+export async function resumenTurno(turno: TurnoLocal): Promise<ResumenTurnoLocal> {
+    const ventas = await db.ventas.where('turnoId').equals(turno.id)
+        .filter((v) => v.estado !== 'RECHAZADA' && v.estado !== 'FALLIDA').toArray();
+    const efectivo = ventas.filter((v) => v.metodoPago === 'EFECTIVO').reduce((s, v) => s + v.total, 0);
+    const otros = ventas.filter((v) => v.metodoPago !== 'EFECTIVO').reduce((s, v) => s + v.total, 0);
+    return { ventas: ventas.length, efectivo, otros, efectivoEsperado: turno.montoInicial + efectivo };
+}
+
+export async function cerrarTurnoLocal(turno: TurnoLocal, montoContado: number): Promise<TurnoLocal> {
+    if (!Number.isInteger(montoContado) || montoContado < 0) throw new Error('El monto contado no es válido.');
+    return db.transaction('rw', [db.turnos, db.ventas, db.outbox, db.meta], async () => {
+        const resumen = await resumenTurno(turno);
+        const cerrado: TurnoLocal = {
+            ...turno,
+            estado: 'CERRADO',
+            cerradoEn: new Date().toISOString(),
+            montoContado,
+            efectivoEsperado: resumen.efectivoEsperado,
+        };
+        await db.turnos.put(cerrado);
+        await encolar('CERRAR_TURNO', uuidv7(), cerrado.cerradoEn!, {
+            turnoId: turno.id,
+            montoContado: String(montoContado),
+        });
+        return cerrado;
+    });
+}
+
 // Registrar venta: venta + outbox + secuencia en UNA sola transacción.
 // O se guardan las tres cosas o ninguna
 
@@ -124,52 +244,50 @@ export interface NuevaVenta {
 export async function registrarVentaLocal(nueva: NuevaVenta): Promise<VentaLocal> {
     if (nueva.items.length === 0) throw new Error('El carrito está vacío.');
 
-    const total = nueva.items.reduce((s, i) => s + i.cantidad * i.precioUnitario, 0);
+    const total = nueva.items.reduce((s, i) => s + i.cantidad * i.precioUnitario - i.descuento, 0);
     const montoRecibido = nueva.metodoPago === 'EFECTIVO' ? nueva.montoRecibido : total;
     if (montoRecibido < total) throw new Error('El monto recibido es menor que el total.');
 
-    return db.transaction('rw', [db.ventas, db.outbox, db.meta], async () => {
-        const actual = await db.meta.get('secuenciaDispositivo');
-        const secuencia = Number(actual?.valor ?? '0') + 1;
-        await db.meta.put({ clave: 'secuenciaDispositivo', valor: String(secuencia) });
+    return db.transaction('rw', [db.ventas, db.outbox, db.meta, db.turnos], async () => {
+        // Sin caja abierta no se vende: cada venta debe poder cuadrarse
+        const turno = await turnoAbierto();
+        if (!turno) throw new Error('Abra la caja antes de vender.');
+        // El cajero es quien tiene la sesión en este equipo al momento de vender
+        const perfil = await perfilGuardado();
+
+        const operacionId = uuidv7();
+        const fechaCliente = new Date().toISOString();
+
+        // Payload exacto que lee ProcesadorVenta en el backend. Números como
+        // string decimal: así nunca pasan por float.
+        const payload = {
+            turnoId: turno.id,
+            cajeroId: perfil?.usuarioId ?? turno.cajeroId,
+            metodoPago: nueva.metodoPago,
+            montoRecibido: String(montoRecibido),
+            totalCliente: String(total),
+            items: nueva.items.map((i) => ({
+                productoId: i.productoId,
+                cantidad: String(i.cantidad),
+                precioUnitario: String(i.precioUnitario),
+                descuento: String(i.descuento),
+            })),
+        };
+        const secuencia = await encolar('VENTA', operacionId, fechaCliente, payload);
 
         const venta: VentaLocal = {
-            operacionId: uuidv7(),
+            operacionId,
             secuencia,
-            fechaCliente: new Date().toISOString(),
+            fechaCliente,
             metodoPago: nueva.metodoPago,
             items: nueva.items,
             total,
             montoRecibido,
             cambio: montoRecibido - total,
             estado: 'PENDIENTE_SYNC',
+            turnoId: turno.id,
         };
-
-        // Payload exacto que lee ProcesadorVenta en el backend. Números como
-        // string decimal: así nunca pasan por float.
-        const payload = {
-            metodoPago: venta.metodoPago,
-            montoRecibido: String(venta.montoRecibido),
-            totalCliente: String(venta.total),
-            items: venta.items.map((i) => ({
-                productoId: i.productoId,
-                cantidad: String(i.cantidad),
-                precioUnitario: String(i.precioUnitario),
-            })),
-        };
-
         await db.ventas.add(venta);
-        await db.outbox.add({
-            operacionId: venta.operacionId,
-            secuencia,
-            tipo: 'VENTA',
-            fechaCliente: venta.fechaCliente,
-            payloadJson: JSON.stringify(payload),
-            estado: 'PENDIENTE',
-            intentos: 0,
-            proximoIntento: 0,
-        });
-
         return venta;
     });
 }
@@ -196,7 +314,7 @@ export async function perfilGuardado(): Promise<Perfil | null> {
  * en ese caso se bloquea, porque esas ventas no se pueden mandar con otra cuenta.
  */
 export async function prepararEquipoPara(perfil: Perfil): Promise<void> {
-    await db.transaction('rw', [db.ventas, db.outbox, db.meta, db.productos], async () => {
+    await db.transaction('rw', [db.ventas, db.outbox, db.meta, db.productos, db.turnos], async () => {
         const anterior = await perfilGuardado();
         if (anterior && anterior.negocioId !== perfil.negocioId) {
             const sinEnviar = await db.outbox.count();
@@ -208,6 +326,7 @@ export async function prepararEquipoPara(perfil: Perfil): Promise<void> {
             }
             await db.ventas.clear();
             await db.productos.clear();
+            await db.turnos.clear();
         }
         await db.meta.put({ clave: 'perfil', valor: JSON.stringify(perfil) });
     });
@@ -218,4 +337,17 @@ export async function guardarCatalogo(productos: ProductoLocal[]): Promise<void>
         await db.productos.clear();
         await db.productos.bulkPut(productos);
     });
+}
+
+// PIN de caja sin internet: mismo PBKDF2-SHA256 que el backend (VerificadorPin)
+export async function verificarPin(pin: string, material: NonNullable<Perfil['pin']>): Promise<boolean> {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
+    const sal = Uint8Array.from(atob(material.sal), (c) => c.charCodeAt(0));
+    const bits = new Uint8Array(await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: sal, iterations: material.iteraciones }, base, 256));
+    const esperado = Uint8Array.from(atob(material.hash), (c) => c.charCodeAt(0));
+    if (bits.length !== esperado.length) return false;
+    let diferencia = 0;
+    for (let i = 0; i < bits.length; i++) diferencia |= bits[i] ^ esperado[i];
+    return diferencia === 0;
 }

@@ -783,3 +783,134 @@ input:user-invalid {
   width: 100%;
   min-width: 0;
 }
+
+/* Caja, inventario y control */
+
+.producto__descuento {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ok-texto);
+}
+
+.linea__descuento {
+  display: block;
+  font-size: 12px;
+  color: var(--ok-texto);
+}
+
+.resumen {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 16px;
+  margin: 8px 0 12px;
+  font-size: 14px;
+}
+
+.resumen dt {
+  color: var(--apagado);
+}
+
+.resumen dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.inventario {
+  padding: 12px 0;
+  border-top: 1px solid var(--borde);
+}
+
+.inventario:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.inventario .producto {
+  padding: 0;
+  border-top: none;
+}
+
+.inventario--inactivo {
+  opacity: 0.55;
+}
+
+.lotes {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--borde);
+}
+
+.lotes li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--apagado);
+  min-height: 36px;
+}
+
+.lotes .estado {
+  margin-left: 8px;
+}
+
+.editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor input {
+  width: 96px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 8px;
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+}
+
+.columna {
+  display: grid;
+  gap: 16px;
+}
+
+.rejilla--una {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.resolver {
+  margin-top: 10px;
+}
+
+.resolver label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.resolver textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 8px;
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+  resize: vertical;
+}
+
+input[type='date'] {
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 8px;
+  background: var(--superficie);
+  color: var(--texto);
+  font: inherit;
+}

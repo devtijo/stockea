@@ -1,8 +1,19 @@
 import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, registrarVentaLocal, type EstadoVentaLocal, type ItemVentaLocal, type MetodoPago } from '../lib/db';
+import {
+    db,
+    descuentoLinea,
+    registrarVentaLocal,
+    turnoAbierto,
+    type EstadoVentaLocal,
+    type ItemVentaLocal,
+    type MetodoPago,
+    type Perfil,
+    type TurnoLocal,
+} from '../lib/db';
 import { solicitarSync, type EstadoSync } from '../SyncOutbox';
 import { pesos } from '../lib/formato';
+import { AbrirCaja, CerrarCaja } from './CajaTurno';
 
 const METODOS: { valor: MetodoPago; etiqueta: string }[] = [
     { valor: 'EFECTIVO', etiqueta: 'Efectivo' },
@@ -26,13 +37,18 @@ interface Dialogo {
 }
 
 interface Props {
+    perfil: Perfil;
     sync: EstadoSync;
     alActualizarCatalogo: () => void;
 }
 
-// Pantalla de venta. Funciona igual con o sin interne
-export default function Vender({ sync, alActualizarCatalogo }: Props) {
+// Pantalla de venta. Funciona igual con o sin internet
+export default function Vender({ perfil, sync, alActualizarCatalogo }: Props) {
     const catalogo = useLiveQuery(() => db.productos.orderBy('nombre').toArray(), [], []);
+    // null = no hay caja abierta; 'CARGANDO' mientras Dexie responde
+    const turno = useLiveQuery(async () => (await turnoAbierto()) ?? null, [], 'CARGANDO' as const);
+    // Se guarda aparte porque al cerrar la caja `turno` pasa a null y el resumen debe seguir visible
+    const [cierre, setCierre] = useState<TurnoLocal | null>(null);
     const [carrito, setCarrito] = useState<Record<string, number>>({});
     const [metodoPago, setMetodoPago] = useState<MetodoPago>('EFECTIVO');
     const [recibido, setRecibido] = useState('');
@@ -50,14 +66,15 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
                     nombre: p.nombre,
                     cantidad: carrito[p.id],
                     precioUnitario: p.precio,
+                    descuento: descuentoLinea(p, carrito[p.id]),
                 })),
         [carrito, catalogo],
     );
 
-    // ADR-002: se vende aunque falte stock; el servidor lo deja como discrepancia.
+    //se vende aunque falte stock; el servidor lo deja como discrepancia.
     const sinStock = items.filter((i) => i.cantidad > (catalogo.find((p) => p.id === i.productoId)?.stock ?? 0));
 
-    const total = items.reduce((s, i) => s + i.cantidad * i.precioUnitario, 0);
+    const total = items.reduce((s, i) => s + i.cantidad * i.precioUnitario - i.descuento, 0);
     const recibidoNum = Number(recibido.replace(/\D/g, '')) || 0;
     const cambio = metodoPago === 'EFECTIVO' ? recibidoNum - total : 0;
 
@@ -102,6 +119,17 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
         }
     }
 
+    if (turno === 'CARGANDO') return null;
+    const modalCierre = cierre && <CerrarCaja turno={cierre} alTerminar={() => setCierre(null)} />;
+    if (turno === null) {
+        return (
+            <>
+                <main>{!cierre && <AbrirCaja perfil={perfil} />}</main>
+                {modalCierre}
+            </>
+        );
+    }
+
     return (
         <>
             <main className="rejilla">
@@ -125,6 +153,11 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
                                     <p className={`producto__meta${p.stock <= 0 ? ' producto__meta--agotado' : ''}`}>
                                         {p.stock > 0 ? `${p.stock} disponibles` : 'Sin stock'}
                                     </p>
+                                    {p.descuento && (
+                                        <p className="producto__descuento">
+                                            −{p.descuento.porcentaje} % en las próximas {p.descuento.unidades}
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="producto__lado">
                                     <span className="monto">{pesos.format(p.precio)}</span>
@@ -138,7 +171,13 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
                 </section>
 
                 <section className="tarjeta tarjeta--carrito" aria-labelledby="t-carrito">
-                    <h2 id="t-carrito">Venta actual</h2>
+                    <div className="titulo-fila">
+                        <h2 id="t-carrito">Venta actual</h2>
+                        <button type="button" className="texto" onClick={() => setCierre(turno)}>
+                            Cerrar caja
+                        </button>
+                    </div>
+                    <p className="sub">Caja de {turno.cajero} · base {pesos.format(turno.montoInicial)}</p>
 
                     {items.length === 0 ? (
                         <p className="vacio">Agrega productos para empezar.</p>
@@ -154,7 +193,10 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
                     <button type="button" className="mini" aria-label={`Agregar una unidad de ${i.nombre}`}
                             onClick={() => cambiarCantidad(i.productoId, 1)}>+</button>
                   </span>
-                                    <span className="linea__subtotal monto">{pesos.format(i.cantidad * i.precioUnitario)}</span>
+                                    <span className="linea__subtotal monto">
+                                        {pesos.format(i.cantidad * i.precioUnitario - i.descuento)}
+                                        {i.descuento > 0 && <small className="linea__descuento">−{pesos.format(i.descuento)}</small>}
+                                    </span>
                                 </div>
                             ))}
                         </div>
@@ -241,6 +283,8 @@ export default function Vender({ sync, alActualizarCatalogo }: Props) {
                     )}
                 </section>
             </main>
+
+            {modalCierre}
 
             {dialogo && (
                 <div className="modal-fondo">

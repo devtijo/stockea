@@ -3,6 +3,9 @@ import { api, entrar, iniciarSesion, mensajeDeError, salir } from './lib/auth';
 import { guardarCatalogo, perfilGuardado, prepararEquipoPara, type Perfil, type ProductoLocal } from './lib/db';
 import { ETIQUETA_ROL } from './lib/formato';
 import { reanudarSync, useSyncOutbox } from './SyncOutbox';
+import Control from './pantallas/Control';
+import DesbloqueoPin from './pantallas/DesbloqueoPin';
+import Inventario from './pantallas/Inventario';
 import RegistroNegocio from './pantallas/RegistroNegocio';
 import Reposicion from './pantallas/Reposicion';
 import Usuarios from './pantallas/Usuarios';
@@ -12,17 +15,25 @@ type Fase =
     | { tipo: 'CARGANDO' }
     | { tipo: 'BIENVENIDA' }
     | { tipo: 'REGISTRO' }
+    | { tipo: 'PIN'; perfil: Perfil }
     | { tipo: 'LISTO'; perfil: Perfil; sinConexion: boolean }
     | { tipo: 'BLOQUEADO'; mensaje: string };
 
-type Pestana = 'VENDER' | 'REPOSICION' | 'USUARIOS';
+type Pestana = 'VENDER' | 'INVENTARIO' | 'CONTROL' | 'REPOSICION' | 'USUARIOS';
 
 /** Descarga el catálogo del negocio y lo deja en Dexie para vender sin internet. */
 async function descargarCatalogo(): Promise<void> {
   const r = await api('/api/catalogo');
   if (!r.ok) return;
-  const datos = (await r.json()) as Array<{ id: string; nombre: string; unidadVenta: string; precio: number; stock: number }>;
-  const productos: ProductoLocal[] = datos.map((p) => ({ ...p, precio: Number(p.precio), stock: Number(p.stock) }));
+  const datos = (await r.json()) as ProductoLocal[];
+  const productos: ProductoLocal[] = datos.map((p) => ({
+    ...p,
+    precio: Number(p.precio),
+    stock: Number(p.stock),
+    descuento: p.descuento
+        ? { porcentaje: Number(p.descuento.porcentaje), unidades: Number(p.descuento.unidades) }
+        : null,
+  }));
   await guardarCatalogo(productos);
 }
 
@@ -30,11 +41,14 @@ async function arrancar(): Promise<Fase> {
   const sesion = await iniciarSesion();
 
   if (sesion === 'SIN_CONEXION') {
-    // Sin internet se sigue vendiendo con el último perfil de este equipo.
+    // Sin internet se sigue vendiendo con el último perfil de este equipo, previa verificación del PIN.
     const perfil = await perfilGuardado();
-    return perfil
-        ? { tipo: 'LISTO', perfil, sinConexion: true }
-        : { tipo: 'BLOQUEADO', mensaje: 'La primera vez se necesita internet para iniciar sesión en este equipo.' };
+    if (!perfil) {
+      return { tipo: 'BLOQUEADO', mensaje: 'La primera vez se necesita internet para iniciar sesión en este equipo.' };
+    }
+    return perfil.pin
+        ? { tipo: 'PIN', perfil }
+        : { tipo: 'BLOQUEADO', mensaje: 'Inicie sesión una vez con internet para poder vender sin conexión.' };
   }
   if (sesion === 'ANONIMO') return { tipo: 'BIENVENIDA' };
 
@@ -91,6 +105,10 @@ export default function App() {
           )}
         </div>
     );
+  }
+  if (fase.tipo === 'PIN') {
+    return <DesbloqueoPin perfil={fase.perfil}
+                          alDesbloquear={() => setFase({ tipo: 'LISTO', perfil: fase.perfil, sinConexion: true })} />;
   }
   if (fase.tipo === 'BLOQUEADO') {
     return (
@@ -179,6 +197,12 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
               <button type="button" aria-current={pestana === 'VENDER' ? 'page' : undefined} onClick={() => setPestana('VENDER')}>
                 Vender
               </button>
+              <button type="button" aria-current={pestana === 'INVENTARIO' ? 'page' : undefined} onClick={() => setPestana('INVENTARIO')}>
+                Inventario
+              </button>
+              <button type="button" aria-current={pestana === 'CONTROL' ? 'page' : undefined} onClick={() => setPestana('CONTROL')}>
+                Control
+              </button>
               <button type="button" aria-current={pestana === 'REPOSICION' ? 'page' : undefined} onClick={() => setPestana('REPOSICION')}>
                 Reposición
               </button>
@@ -192,10 +216,14 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
 
         {pestana === 'USUARIOS' && esAdmin ? (
             <Usuarios perfil={perfil} online={sync.online && !sinConexionAlAbrir} />
+        ) : pestana === 'INVENTARIO' && esSupervisor ? (
+            <Inventario online={sync.online && !sinConexionAlAbrir} alCambiar={actualizarCatalogo} />
+        ) : pestana === 'CONTROL' && esSupervisor ? (
+            <Control online={sync.online && !sinConexionAlAbrir} />
         ) : pestana === 'REPOSICION' && esSupervisor ? (
             <Reposicion online={sync.online && !sinConexionAlAbrir} />
         ) : (
-            <Vender sync={sync} alActualizarCatalogo={actualizarCatalogo} />
+            <Vender perfil={perfil} sync={sync} alActualizarCatalogo={actualizarCatalogo} />
         )}
 
         <footer className="pie-estado">
