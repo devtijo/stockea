@@ -3,7 +3,7 @@
 # según SPRING_PROFILES_ACTIVE (12-Factor V y VIII: build una vez, varios procesos).
 
 # --- Etapa 1: compilar (no llega a la imagen final)
-FROM maven:3.9-eclipse-temurin-21-alpine AS construccion
+FROM maven:3.9-eclipse-temurin-26-alpine AS construccion
 WORKDIR /fuente
 COPY pom.xml .
 RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
