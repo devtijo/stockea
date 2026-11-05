@@ -1,0 +1,150 @@
+# Pipeline de STOCKEA
+#   CI: en cada push y pull request
+#   CD: en cada push a main que pasa todo
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend · pruebas, cobertura y SonarQube
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0               # SonarQube usa el historial para saber qué código es nuevo
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: actions/setup-node@v7    # el analizador de TypeScript de SonarQube usa Node
+        with:
+          node-version: "22"
+
+      # 80 pruebas: unitarias + integración con PostgreSQL y RabbitMQ reales (Testcontainers usa el Docker del runner)
+      - name: Pruebas y cobertura (JaCoCo)
+        run: ./mvnw -B verify
+
+      - name: Reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reportes-backend
+          path: |
+            target/surefire-reports/
+            target/site/jacoco/
+          retention-days: 14
+
+      # Solo si el repo tiene el secreto SONAR_TOKEN (los PR desde forks no lo tienen)
+      - name: SonarQube Cloud (falla si no pasa el quality gate)
+        if: env.SONAR_TOKEN != ''
+        run: >
+          ./mvnw -B sonar:sonar
+          -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.qualitygate.wait=true
+
+  frontend:
+    name: Frontend · lint y build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run build             # tsc (tipos) + vite
+
+  seguridad:
+    name: Seguridad · Trivy (imágenes y repositorio)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6    # Trivy resuelve las dependencias del pom.xml desde ~/.m2 (caché)
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: docker/setup-buildx-action@v4
+      - name: Construir imágenes (mismas que docker compose)
+        run: |
+          cp .env.example .env         # compose exige las variables; para construir basta con los valores de ejemplo
+          docker compose build backend frontend gateway
+      - name: Trivy (falla con HIGH/CRITICAL que ya tienen arreglo)
+        run: bash infra/calidad/trivy.sh
+      - name: Reportes de Trivy
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reportes-trivy
+          path: target/trivy/
+          retention-days: 14
+
+  publicar:
+    name: CD · publicar imágenes en GHCR
+    needs: [backend, frontend, seguridad]
+    if: github.event_name == 'push'    # solo main y etiquetas v*, nunca un pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - componente: backend
+            contexto: .
+          - componente: frontend
+            contexto: frontend
+          - componente: gateway
+            contexto: infra/gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/stockea-${{ matrix.componente }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.contexto }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.componente }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.componente }}

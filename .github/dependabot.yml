@@ -1,0 +1,17 @@
+# Dependabot: pull requests semanales con actualizaciones de dependencias e imágenes.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directories: [/, /frontend, /infra/gateway]
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
