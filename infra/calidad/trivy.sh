@@ -2,8 +2,6 @@
 # Escaneo de seguridad con Trivy
 #   1) Imágenes propias
 #   2) Repositorio
-
-
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 SALIDA=target/trivy
@@ -27,12 +25,20 @@ for imagen in stockea/backend:local stockea/frontend:local stockea/gateway:local
     "$imagen" | tee "$archivo" || falla=1
 done
 echo "== Repositorio (dependencias, secretos, Dockerfiles)"
-
-trivy fs --quiet --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+# Trivy necesita los pom de TODAS las dependencias (incluidos los BOM que importa Spring Boot). Si los
+# pide uno por uno a Maven Central, este responde 429 (demasiadas peticiones) y el escaneo se cae.
+# Por eso primero Maven los deja en ~/.m2 y Trivy los lee de ahí sin salir a internet (--offline-scan).
+./mvnw -B -q dependency:go-offline || falla=1
+# certs/ se salta: es el certificado LOCAL (ignorado por git), no algo que se publique
+trivy fs --quiet --offline-scan --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
   --skip-dirs /repo/node_modules --skip-dirs /repo/frontend/node_modules --skip-dirs /repo/target \
   --skip-dirs /repo/frontend/dist --skip-dirs /repo/infra/gateway/certs \
   /repo | tee "$SALIDA/repositorio.txt" || falla=1
 
 echo
-if [ "$falla" -eq 0 ]; then echo "Trivy: sin vulnerabilidades HIGH/CRITICAL con arreglo disponible."; else echo "Trivy: hay hallazgos (ver $SALIDA/)."; fi
+if [ "$falla" -eq 0 ]; then
+  echo "Trivy: sin vulnerabilidades HIGH/CRITICAL con arreglo disponible."
+else
+  echo "Trivy: hay hallazgos o un paso falló (revise la salida de arriba y $SALIDA/)."
+fi
 exit "$falla"
