@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.m2 mvn -B -q -DskipTests package \
  && java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination extraido
 
 # --- Etapa 2: ejecutar. Solo JRE (sin compilador ni Maven), usuario sin privilegios.
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 # Parches de seguridad del sistema base (Trivy marcó libexpat); luego, usuario sin privilegios
 RUN apk upgrade --no-cache \
  && addgroup -S stockea && adduser -S -G stockea -H stockea
