@@ -13,7 +13,9 @@ RUN --mount=type=cache,target=/root/.m2 mvn -B -q -DskipTests package \
 
 # --- Etapa 2: ejecutar. Solo JRE (sin compilador ni Maven), usuario sin privilegios.
 FROM eclipse-temurin:21-jre-alpine
-RUN addgroup -S stockea && adduser -S -G stockea -H stockea
+# Parches de seguridad del sistema base (Trivy marcó libexpat); luego, usuario sin privilegios
+RUN apk upgrade --no-cache \
+ && addgroup -S stockea && adduser -S -G stockea -H stockea
 WORKDIR /app
 # Capas de la menos a la más cambiante: un cambio de código no vuelve a bajar dependencias
 COPY --from=construccion /fuente/extraido/dependencies/ ./

