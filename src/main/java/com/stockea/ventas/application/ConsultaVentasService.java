@@ -24,12 +24,16 @@ class ConsultaVentasService implements ConsultaVentasApi {
     @Override
     @Transactional(readOnly = true)
     public ResumenTurno resumenTurno(UUID negocioId, UUID turnoId) {
-        return resumenTurnos(negocioId, List.of(turnoId)).getOrDefault(turnoId, ResumenTurno.VACIO);
+        return consultar(negocioId, List.of(turnoId)).getOrDefault(turnoId, ResumenTurno.VACIO);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Map<UUID, ResumenTurno> resumenTurnos(UUID negocioId, Collection<UUID> turnos) {
+        return consultar(negocioId, turnos);
+    }
+
+    private Map<UUID, ResumenTurno> consultar(UUID negocioId, Collection<UUID> turnos) {
         var resultado = new HashMap<UUID, ResumenTurno>();
         if (turnos.isEmpty()) return resultado;
         // Lo que se cobró es lo que entra a la caja, haya discrepancia o no (ADR-002)

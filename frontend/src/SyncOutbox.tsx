@@ -52,9 +52,11 @@ function clasificar(status: number | undefined): Accion {
     return 'FALLIDA'; // 400, 403, 422...
 }
 
-// Backoff exponencial con jitter, tope 60 s.
+// Backoff exponencial con jitter, tope 60 s. El azar sale de crypto (no de Math.random) aunque aquí
+// no sea un uso de seguridad: así el analizador no tiene que adivinarlo.
 function espera(intentos: number): number {
-    return Math.min(60_000, 1000 * 2 ** intentos) * (0.5 + Math.random() / 2);
+    const azar = crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
+    return Math.min(60_000, 1000 * 2 ** intentos) * (0.5 + azar / 2);
 }
 
 function estadoLocal(estadoServidor: string): EstadoVentaLocal {

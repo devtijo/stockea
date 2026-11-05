@@ -1,5 +1,8 @@
 package com.stockea.caja.application;
 
+import tools.jackson.core.JacksonException;
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.caja.domain.ErrorCaja;
 import com.stockea.sync.api.ComandoOperacion;
 import com.stockea.sync.api.EstadoOperacion;
 import com.stockea.sync.api.ProcesadorOperacion;
@@ -13,8 +16,8 @@ import tools.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.util.UUID;
 
-// Cierre de caja: el cajero cuenta el efectivo y el servidor calcula el cuadre
-// Como la cola es FIFO por dispositivo, cuando llega el cierre ya llegaron todas las ventas del turno
+// Cierre de caja: el cajero cuenta el efectivo y el servidor calcula el cuadre.
+// Como la cola es FIFO por dispositivo, cuando llega el cierre ya llegaron todas las ventas del turno.
 @Service
 class ProcesadorCerrarTurno implements ProcesadorOperacion {
 
@@ -37,9 +40,14 @@ class ProcesadorCerrarTurno implements ProcesadorOperacion {
 
     @Override
     public ResultadoOperacion procesar(ComandoOperacion cmd) {
-        var p = jsonMapper.readValue(cmd.payloadJson(), CerrarTurnoPayload.class);
-        if (p.montoContado() == null || p.montoContado().signum() < 0) {
-            throw new IllegalArgumentException("Monto contado inválido");
+        CerrarTurnoPayload p;
+        try {
+            p = jsonMapper.readValue(cmd.payloadJson(), CerrarTurnoPayload.class);
+        } catch (JacksonException e) {
+            throw new ReglaNegocioException(ErrorCaja.CIERRE_INVALIDO);
+        }
+        if (p.turnoId() == null || p.montoContado() == null || p.montoContado().signum() < 0) {
+            throw new ReglaNegocioException(ErrorCaja.CIERRE_INVALIDO);
         }
         var inicial = jdbc.query("SELECT monto_inicial FROM turno_caja WHERE negocio_id = ? AND id = ? FOR UPDATE",
                 (rs, i) -> rs.getBigDecimal(1), cmd.negocioId(), p.turnoId());

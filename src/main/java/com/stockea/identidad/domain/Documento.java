@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 
 public record Documento(TipoDocumento tipo, String numero) {
 
-    private static final Pattern NUMERO = Pattern.compile("[0-9A-Za-z]{5,15}");
+    private static final Pattern PATRON_NUMERO = Pattern.compile("[0-9A-Za-z]{5,15}");
 
     public enum TipoDocumento { CC, CE, PA, PPT, TI }
 
@@ -18,8 +18,8 @@ public record Documento(TipoDocumento tipo, String numero) {
         Objects.requireNonNull(tipo, "tipo");
         Objects.requireNonNull(numero, "numero");
         numero = numero.trim();
-        if (!NUMERO.matcher(numero).matches()) {
-            throw new IllegalArgumentException("Número de documento inválido");
+        if (!PATRON_NUMERO.matcher(numero).matches()) {
+            throw new ReglaIdentidadException(ErrorIdentidad.DOCUMENTO_INVALIDO);
         }
     }
     // Nombre de usuario único global en Keycloak

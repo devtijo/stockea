@@ -1,5 +1,7 @@
 package com.stockea.sync.application;
 
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.sync.domain.ErrorSync;
 import com.stockea.sync.api.ComandoOperacion;
 import com.stockea.sync.api.ProcesadorOperacion;
 import com.stockea.sync.api.ResultadoOperacion;
@@ -27,6 +29,13 @@ import java.util.UUID;
 @Service
 public class SyncService {
 
+    // Nombres de métricas y etiquetas en un solo lugar
+    private static final String METRICA_OPERACIONES = "stockea.sync.operaciones";
+    private static final String METRICA_DISCREPANCIAS = "stockea.discrepancias.registradas";
+    private static final String TIPO = "tipo";
+    private static final String ESTADO = "estado";
+    private static final String MOTIVO = "motivo";
+
     private static final Logger log = LoggerFactory.getLogger(SyncService.class);
 
     private final JdbcTemplate jdbcTemplate;
@@ -51,13 +60,13 @@ public class SyncService {
         // Contadores en 0 desde el arranque: increase() de Prometheus no cuenta el primer
         // incremento de una serie que aún no existía (las alertas y paneles lo perderían).
         for (var estado : new String[]{"ACEPTADA", "DISCREPANCIA"}) {
-            metricas.counter("stockea.sync.operaciones", "tipo", "VENTA", "estado", estado);
+            metricas.counter(METRICA_OPERACIONES, TIPO, "VENTA", ESTADO, estado);
         }
         for (var tipo : new String[]{"ABRIR_TURNO", "CERRAR_TURNO"}) {
-            metricas.counter("stockea.sync.operaciones", "tipo", tipo, "estado", "ACEPTADA");
+            metricas.counter(METRICA_OPERACIONES, TIPO, tipo, ESTADO, "ACEPTADA");
         }
         for (var motivo : new String[]{"STOCK_INSUFICIENTE", "PRECIO_DIFERENTE"}) {
-            metricas.counter("stockea.discrepancias.registradas", "motivo", motivo);
+            metricas.counter(METRICA_DISCREPANCIAS, MOTIVO, motivo);
         }
     }
 
@@ -89,7 +98,7 @@ public class SyncService {
             var procesador = procesadores.stream()
                     .filter(p -> p.tipo() == TipoOperacion.valueOf(op.tipo()))
                     .findFirst()
-                    .orElseThrow(() -> new IllegalArgumentException("No hay procesador para " + op.tipo()));
+                    .orElseThrow(() -> new ReglaNegocioException(ErrorSync.TIPO_OPERACION_DESCONOCIDO, op.tipo()));
 
             // Procesar la operación
             var comando = new ComandoOperacion(
@@ -143,9 +152,9 @@ public class SyncService {
         var estado = resultado.estado().name();
         var motivos = resultado.discrepancias().stream().map(ResultadoOperacion.DiscrepanciaInfo::motivo).toList();
         DespuesDelCommit.ejecutar(() -> {
-            metricas.counter("stockea.sync.operaciones", "tipo", tipo, "estado", estado).increment();
+            metricas.counter(METRICA_OPERACIONES, TIPO, tipo, ESTADO, estado).increment();
             for (var motivo : motivos) {
-                metricas.counter("stockea.discrepancias.registradas", "motivo", motivo).increment();
+                metricas.counter(METRICA_DISCREPANCIAS, MOTIVO, motivo).increment();
             }
             MDC.put("operacion_id", operacionId.toString());
             log.info("Operación {} {} procesada: {}", tipo, operacionId, estado);

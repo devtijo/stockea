@@ -7,7 +7,9 @@ public enum ErrorIdentidad {
     CLAVE_NO_CUMPLE_POLITICA("La contraseña no cumple la política: mínimo 8 caracteres, al menos un dígito y distinta del documento"),
     USUARIO_INHABILITADO("El usuario fue inhabilitado; inicie sesión con otra cuenta"),
     USUARIO_NO_ENCONTRADO("El usuario no existe en este negocio"),
-    NO_PUEDE_INHABILITARSE("Un administrador no puede inhabilitarse a sí mismo");
+    NO_PUEDE_INHABILITARSE("Un administrador no puede inhabilitarse a sí mismo"),
+    DOCUMENTO_INVALIDO("Número de documento inválido: solo letras y números, de 5 a 15 caracteres"),
+    DISPOSITIVO_BLOQUEADO("El dispositivo está bloqueado para este negocio");
 
     private final String mensaje;
 

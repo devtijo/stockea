@@ -1,19 +1,19 @@
 package com.stockea.sync.application;
 
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.sync.domain.ErrorSync;
 import com.stockea.shared.tenant.TenantContext;
-import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-// Bandeja del supervisor: las ventas se aceptaron igual, aquí se revisa qué pasó y se deja nota
+// Bandeja del supervisor: las ventas se aceptaron igual (ADR-002), aquí se revisa qué pasó y se deja nota
 @Service
 @PreAuthorize("hasRole('SUPERVISOR')")
 public class DiscrepanciasService {
@@ -44,7 +44,7 @@ public class DiscrepanciasService {
                 rs.getString("nota_resolucion")), estado);
     }
 
-    // Resolver = el supervisor revisó y explica qué hizo
+    // Resolver = el supervisor revisó y explica qué hizo (conteo físico, cobro al cliente, etc.)
     @Transactional
     public void resolver(UUID id, String nota) {
         var tenant = TenantContext.requerido();
@@ -53,7 +53,7 @@ public class DiscrepanciasService {
                 WHERE id = ? AND estado = 'ABIERTA'
                 """, tenant.usuarioId(), nota, id);
         if (filas == 0) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "La discrepancia no existe o ya está resuelta");
+            throw new ReglaNegocioException(ErrorSync.DISCREPANCIA_NO_ENCONTRADA);
         }
     }
 }

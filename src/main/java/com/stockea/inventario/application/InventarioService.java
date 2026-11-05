@@ -1,5 +1,7 @@
 package com.stockea.inventario.application;
 
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.inventario.domain.ErrorInventario;
 import com.github.f4b6a3.uuid.UuidCreator;
 import com.stockea.descuentos.api.DescuentosApi;
 import com.stockea.shared.tenant.TenantContext;
@@ -21,9 +23,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
-// Lo que pasa ANTES de vender: crear productos, cambiar precios y recibir mercancía
-// Son operaciones de gestión: requieren internet y rol SUPERVISOR o más
+// Lo que pasa ANTES de vender: crear productos, cambiar precios y recibir mercancía.
+// Son operaciones de gestión: requieren internet y rol SUPERVISOR o más.
 @Service
 @PreAuthorize("hasRole('SUPERVISOR')")
 public class InventarioService {
@@ -69,7 +72,7 @@ public class InventarioService {
         return id;
     }
 
-    // El precio nuevo rige desde ahora
+    // El precio nuevo rige desde ahora. El anterior queda en el historial (no se borra):
     // así una venta hecha sin internet antes del cambio se valida con el precio de su momento
     @Transactional
     public void cambiarPrecio(UUID productoId, BigDecimal precio) {
@@ -78,7 +81,7 @@ public class InventarioService {
         int filas = jdbc.update("UPDATE producto SET precio_venta = ?, actualizado_en = now() WHERE id = ?",
                 precio, productoId);
         if (filas == 0) {
-            throw new IllegalArgumentException("El producto no existe");
+            throw new ReglaNegocioException(ErrorInventario.PRODUCTO_NO_ENCONTRADO);
         }
         registrarPrecio(tenant.negocioId(), productoId, precio, tenant.usuarioId());
     }
@@ -86,7 +89,7 @@ public class InventarioService {
     @Transactional
     public void cambiarEstado(UUID productoId, boolean activo) {
         if (jdbc.update("UPDATE producto SET activo = ?, actualizado_en = now() WHERE id = ?", activo, productoId) == 0) {
-            throw new IllegalArgumentException("El producto no existe");
+            throw new ReglaNegocioException(ErrorInventario.PRODUCTO_NO_ENCONTRADO);
         }
     }
 
@@ -95,17 +98,17 @@ public class InventarioService {
     public UUID registrarEntrada(Entrada e) {
         var tenant = TenantContext.requerido();
         if (e.cantidad() == null || e.cantidad().signum() <= 0) {
-            throw new IllegalArgumentException("La cantidad debe ser mayor que cero");
+            throw new ReglaNegocioException(ErrorInventario.CANTIDAD_ENTRADA_INVALIDA);
         }
         if (e.costoUnitario() == null || e.costoUnitario().signum() < 0) {
-            throw new IllegalArgumentException("El costo no puede ser negativo");
+            throw new ReglaNegocioException(ErrorInventario.COSTO_NEGATIVO);
         }
         if (e.fechaVencimiento() == null || e.fechaVencimiento().isBefore(hoy())) {
-            throw new IllegalArgumentException("No se puede recibir mercancía ya vencida");
+            throw new ReglaNegocioException(ErrorInventario.MERCANCIA_VENCIDA);
         }
         var activo = jdbc.queryForList("SELECT activo FROM producto WHERE id = ?", Boolean.class, e.productoId());
-        if (activo.isEmpty() || !activo.getFirst()) {
-            throw new IllegalArgumentException("El producto no existe o está inactivo");
+        if (activo.isEmpty() || !Boolean.TRUE.equals(activo.getFirst())) {
+            throw new ReglaNegocioException(ErrorInventario.PRODUCTO_INACTIVO);
         }
         var lote = UuidCreator.getTimeOrderedEpoch();
         jdbc.update("""
@@ -121,51 +124,53 @@ public class InventarioService {
         return lote;
     }
 
+    // Fila de lote tal como sale de la base, antes de armar el resumen
+    private record FilaLote(UUID id, UUID productoId, LocalDate vence, BigDecimal inicial, BigDecimal disponible,
+                            BigDecimal costo, String estado) {}
+
     @Transactional(readOnly = true)
     public List<ProductoResumen> productos() {
         var negocio = TenantContext.requerido().negocioId();
         var hoy = hoy();
-        Map<UUID, ProductoResumen> porId = new LinkedHashMap<>();
-        jdbc.query("""
+        List<ProductoResumen> productos = jdbc.query("""
                 SELECT id, nombre, categoria, unidad_venta, precio_venta, activo
                   FROM producto ORDER BY activo DESC, nombre""",
-                rs -> {
-                    var id = rs.getObject("id", UUID.class);
-                    porId.put(id, new ProductoResumen(id, rs.getString("nombre"), rs.getString("categoria"),
-                            rs.getString("unidad_venta"), rs.getBigDecimal("precio_venta"), rs.getBoolean("activo"),
-                            BigDecimal.ZERO, new ArrayList<>()));
-                });
+                (rs, i) -> new ProductoResumen(rs.getObject("id", UUID.class), rs.getString("nombre"),
+                        rs.getString("categoria"), rs.getString("unidad_venta"), rs.getBigDecimal("precio_venta"),
+                        rs.getBoolean("activo"), BigDecimal.ZERO, List.of()));
         // Solo lotes con algo disponible: los agotados no aportan a la gestión diaria
-        List<Object[]> lotes = jdbc.query("""
+        List<FilaLote> lotes = jdbc.query("""
                 SELECT id, producto_id, fecha_vencimiento, cantidad_inicial, cantidad_disponible, costo_unitario, estado
                   FROM lote WHERE cantidad_disponible > 0 ORDER BY fecha_vencimiento, id""",
-                (rs, i) -> new Object[]{rs.getObject("id", UUID.class), rs.getObject("producto_id", UUID.class),
+                (rs, i) -> new FilaLote(rs.getObject("id", UUID.class), rs.getObject("producto_id", UUID.class),
                         rs.getDate("fecha_vencimiento").toLocalDate(), rs.getBigDecimal("cantidad_inicial"),
                         rs.getBigDecimal("cantidad_disponible"), rs.getBigDecimal("costo_unitario"),
-                        rs.getString("estado")});
-        var conDescuento = descuentos.vigentesPorLote(negocio, lotes.stream().map(l -> (UUID) l[0]).toList());
-        List<ProductoResumen> resultado = new ArrayList<>();
-        for (var p : porId.values()) {
-            var propios = new ArrayList<LoteResumen>();
-            var stock = BigDecimal.ZERO;
-            for (var l : lotes) {
-                if (!p.id().equals(l[1])) {
-                    continue;
-                }
-                var vence = (LocalDate) l[2];
-                var vencido = vence.isBefore(hoy);
-                var d = conDescuento.get((UUID) l[0]);
-                propios.add(new LoteResumen((UUID) l[0], vence, (BigDecimal) l[3], (BigDecimal) l[4],
-                        (BigDecimal) l[5], vencido ? "VENCIDO" : (String) l[6],
-                        d == null ? null : d.id(), d == null ? null : d.porcentaje()));
-                if (!vencido && "ACTIVO".equals(l[6])) {
-                    stock = stock.add((BigDecimal) l[4]);
-                }
+                        rs.getString("estado")));
+        var conDescuento = descuentos.vigentesPorLote(negocio, lotes.stream().map(FilaLote::id).toList());
+        Map<UUID, List<FilaLote>> porProducto = lotes.stream()
+                .collect(Collectors.groupingBy(FilaLote::productoId, LinkedHashMap::new, Collectors.toList()));
+        return productos.stream()
+                .map(p -> conLotes(p, porProducto.getOrDefault(p.id(), List.of()), conDescuento, hoy))
+                .toList();
+    }
+
+    // Stock vendible = lotes activos y no vencidos
+    private static ProductoResumen conLotes(ProductoResumen p, List<FilaLote> lotes,
+                                            Map<UUID, DescuentosApi.DescuentoVigente> conDescuento, LocalDate hoy) {
+        var propios = new ArrayList<LoteResumen>();
+        var stock = BigDecimal.ZERO;
+        for (var l : lotes) {
+            var vencido = l.vence().isBefore(hoy);
+            var d = conDescuento.get(l.id());
+            propios.add(new LoteResumen(l.id(), l.vence(), l.inicial(), l.disponible(), l.costo(),
+                    vencido ? "VENCIDO" : l.estado(),
+                    d == null ? null : d.id(), d == null ? null : d.porcentaje()));
+            if (!vencido && "ACTIVO".equals(l.estado())) {
+                stock = stock.add(l.disponible());
             }
-            resultado.add(new ProductoResumen(p.id(), p.nombre(), p.categoria(), p.unidadVenta(), p.precio(),
-                    p.activo(), stock, propios));
         }
-        return resultado;
+        return new ProductoResumen(p.id(), p.nombre(), p.categoria(), p.unidadVenta(), p.precio(),
+                p.activo(), stock, propios);
     }
 
     private void registrarPrecio(UUID negocio, UUID producto, BigDecimal precio, UUID usuario) {
@@ -177,7 +182,7 @@ public class InventarioService {
 
     private static void validarPrecio(BigDecimal precio) {
         if (precio == null || precio.signum() <= 0) {
-            throw new IllegalArgumentException("El precio debe ser mayor que cero");
+            throw new ReglaNegocioException(ErrorInventario.PRECIO_INVALIDO);
         }
     }
 

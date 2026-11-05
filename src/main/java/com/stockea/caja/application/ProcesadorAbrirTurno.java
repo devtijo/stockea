@@ -1,5 +1,8 @@
 package com.stockea.caja.application;
 
+import tools.jackson.core.JacksonException;
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.caja.domain.ErrorCaja;
 import com.stockea.identidad.api.NegocioApi;
 import com.stockea.sync.api.ComandoOperacion;
 import com.stockea.sync.api.EstadoOperacion;
@@ -13,7 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.util.UUID;
 
-// El cajero abre la caja en el dispositivo (con o sin internet) y la apertura llega por la cola
+// El cajero abre la caja en el dispositivo (con o sin internet) y la apertura llega por la cola (ADR-025)
 @Service
 class ProcesadorAbrirTurno implements ProcesadorOperacion {
 
@@ -36,9 +39,14 @@ class ProcesadorAbrirTurno implements ProcesadorOperacion {
 
     @Override
     public ResultadoOperacion procesar(ComandoOperacion cmd) {
-        var p = jsonMapper.readValue(cmd.payloadJson(), AbrirTurnoPayload.class);
+        AbrirTurnoPayload p;
+        try {
+            p = jsonMapper.readValue(cmd.payloadJson(), AbrirTurnoPayload.class);
+        } catch (JacksonException e) {
+            throw new ReglaNegocioException(ErrorCaja.APERTURA_INVALIDA);
+        }
         if (p.turnoId() == null || p.montoInicial() == null || p.montoInicial().signum() < 0) {
-            throw new IllegalArgumentException("Apertura de turno inválida");
+            throw new ReglaNegocioException(ErrorCaja.APERTURA_INVALIDA);
         }
         var cajero = negocioApi.esUsuarioDelNegocio(cmd.negocioId(), p.cajeroId()) ? p.cajeroId() : cmd.usuarioId();
 

@@ -18,6 +18,10 @@ import org.springframework.stereotype.Component;
 @Profile("worker")
 class VentaRegistradaListener {
 
+    private static final String PROCESADO = "procesado";
+    private static final String DUPLICADO = "duplicado";
+    private static final String ERROR = "error";
+
     private static final Logger log = LoggerFactory.getLogger(VentaRegistradaListener.class);
 
     private final VelocidadVentaService velocidad;
@@ -26,7 +30,7 @@ class VentaRegistradaListener {
     VentaRegistradaListener(VelocidadVentaService velocidad, MeterRegistry metricas) {
         this.velocidad = velocidad;
         this.metricas = metricas;
-        for (var resultado : new String[]{"procesado", "duplicado", "error"}) {
+        for (var resultado : new String[]{PROCESADO, DUPLICADO, ERROR}) {
             metricas.counter("stockea.eventos.consumidos", "evento", "venta.registrada", "resultado", resultado);
         }
     }
@@ -37,10 +41,10 @@ class VentaRegistradaListener {
         MDC.put("venta_id", String.valueOf(evento.ventaId()));
         try {
             boolean procesado = velocidad.registrar(evento);
-            contar(procesado ? "procesado" : "duplicado");
-            log.info("Evento venta.registrada {}", procesado ? "procesado" : "duplicado: se ignora");
+            contar(procesado ? PROCESADO : DUPLICADO);
+            log.info("Evento venta.registrada {}", procesado ? PROCESADO : DUPLICADO + ": se ignora");
         } catch (RuntimeException e) {
-            contar("error");
+            contar(ERROR);
             log.warn("Error procesando venta.registrada: {}", e.getMessage());
             throw e; // lo maneja la política de reintentos y la DLQ
         } finally {

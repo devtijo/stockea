@@ -1,5 +1,6 @@
 package com.stockea.config.security;
 
+import com.stockea.config.web.ErrorGeneral;
 import com.stockea.shared.seguridad.Rol;
 import com.stockea.shared.tenant.TenantContext;
 import jakarta.servlet.FilterChain;
@@ -24,6 +25,10 @@ import java.util.UUID;
 
 class TenantFilter extends OncePerRequestFilter {
 
+    // Claim del token y campos del log (MDC) con el mismo nombre
+    private static final String NEGOCIO_ID = "negocio_id";
+    private static final String USUARIO_ID = "usuario_id";
+
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain cadena)
             throws ServletException, IOException {
@@ -35,26 +40,26 @@ class TenantFilter extends OncePerRequestFilter {
 
         Optional<TenantContext.Tenant> tenant = aTenant(jwtAuth);
         if (tenant.isEmpty()) {
-            res.sendError(HttpStatus.FORBIDDEN.value(), "El token no pertenece a ningún negocio");
+            res.sendError(HttpStatus.FORBIDDEN.value(), ErrorGeneral.TOKEN_SIN_NEGOCIO.mensaje());
             return;
         }
 
         TenantContext.establecer(tenant.get());
-        MDC.put("negocio_id", tenant.get().negocioId().toString());
-        MDC.put("usuario_id", tenant.get().usuarioId().toString());
+        MDC.put(NEGOCIO_ID, tenant.get().negocioId().toString());
+        MDC.put(USUARIO_ID, tenant.get().usuarioId().toString());
         try {
             cadena.doFilter(req, res);
         } finally {
             TenantContext.limpiar();
-            MDC.remove("negocio_id");
-            MDC.remove("usuario_id");
+            MDC.remove(NEGOCIO_ID);
+            MDC.remove(USUARIO_ID);
         }
     }
 
     static Optional<TenantContext.Tenant> aTenant(JwtAuthenticationToken auth) {
         try {
             var jwt = auth.getToken();
-            UUID negocio = UUID.fromString(jwt.getClaimAsString("negocio_id"));
+            UUID negocio = UUID.fromString(jwt.getClaimAsString(NEGOCIO_ID));
             UUID usuario = UUID.fromString(jwt.getSubject());
             Optional<Rol> rol = Rol.mayor(roles(jwt.getClaimAsMap("realm_access")));
             return rol.map(r -> new TenantContext.Tenant(negocio, usuario, r));

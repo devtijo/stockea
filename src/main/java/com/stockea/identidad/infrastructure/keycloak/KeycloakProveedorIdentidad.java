@@ -75,7 +75,11 @@ class KeycloakProveedorIdentidad implements ProveedorIdentidad {
                     .body(usuario)
                     .retrieve()
                     .toBodilessEntity();
-            String ubicacion = respuesta.getHeaders().getLocation().getPath();
+            var location = respuesta.getHeaders().getLocation();
+            if (location == null) {
+                throw new IllegalStateException("Keycloak no devolvió la ubicación del usuario creado");
+            }
+            String ubicacion = location.getPath();
             id = UUID.fromString(ubicacion.substring(ubicacion.lastIndexOf('/') + 1));
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.CONFLICT) {
@@ -148,8 +152,11 @@ class KeycloakProveedorIdentidad implements ProveedorIdentidad {
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .body(formulario)
                 .retrieve().body(MAPA);
+        if (respuesta == null || !(respuesta.get("expires_in") instanceof Number expira)) {
+            throw new IllegalStateException("Keycloak no devolvió un token de servicio válido");
+        }
         token = String.valueOf(respuesta.get("access_token"));
-        long segundos = ((Number) respuesta.get("expires_in")).longValue();
+        long segundos = expira.longValue();
         tokenVence = clock.instant().plusSeconds(Math.max(0, segundos - 30));
         return token;
     }

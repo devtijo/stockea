@@ -15,7 +15,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-// El servidor no recalcula lo cobrado, compara con el precio y el descuento vigentes
+// El servidor no recalcula lo cobrado compara con el precio y el descuento vigentes
 // y, si no coinciden, acepta la venta y deja una discrepancia PRECIO_DIFERENTE (ADR-002)
 class PreciosYDescuentosIntegrationTest extends IntegracionBase {
 
@@ -51,9 +51,8 @@ class PreciosYDescuentosIntegrationTest extends IntegracionBase {
     @DisplayName("Venta hecha sin internet ANTES de un cambio de precio: vale el precio de ese momento")
     void precioDelMomentoDeLaVenta() throws Exception {
         recibir("10", 20);
-        Thread.sleep(50);
+        // Entre crear el producto y cambiar el precio pasa al menos una petición HTTP completa
         var antesDelCambio = Instant.now();
-        Thread.sleep(50);
         put("/api/inventario/productos/" + producto + "/precio", supervisor.token(), "{\"precio\": 5000}");
 
         var viejo = vender(1, venta(turno, cajero.usuarioId(), "EFECTIVO", producto, "1", "4000", "0"), antesDelCambio);
@@ -112,7 +111,9 @@ class PreciosYDescuentosIntegrationTest extends IntegracionBase {
         var lote = recibir("2", 3);
         var cuerpo = "{\"loteId\":\"" + lote + "\",\"porcentaje\":%s}";
 
-        assertThat(post("/api/descuentos", supervisor.token(), cuerpo.formatted("80")).statusCode()).isEqualTo(400);
+        var fueraDeRango = post("/api/descuentos", supervisor.token(), cuerpo.formatted("80"));
+        assertThat(fueraDeRango.statusCode()).isEqualTo(400);
+        assertThat(fueraDeRango.body()).contains("PORCENTAJE_FUERA_DE_RANGO").contains("entre 0 y 30 %");
         assertThat(post("/api/descuentos", cajero.token(), cuerpo.formatted("10")).statusCode()).isEqualTo(403);
     }
 

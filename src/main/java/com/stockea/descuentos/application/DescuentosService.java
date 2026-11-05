@@ -1,5 +1,7 @@
 package com.stockea.descuentos.application;
 
+import com.stockea.shared.domain.ReglaNegocioException;
+import com.stockea.descuentos.domain.ErrorDescuento;
 import com.stockea.descuentos.api.DescuentosApi;
 import com.stockea.descuentos.domain.CalculadoraDescuento;
 import com.stockea.identidad.api.NegocioApi;
@@ -19,7 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-// Descuentos por lote: el supervisor rebaja un lote
+// Descuentos por lote: el supervisor rebaja un lote (por ejemplo, porque está por vencer)
 // La venta aplica el descuento del lote que FEFO realmente entrega, no el que el cliente supone.
 @Service
 public class DescuentosService implements DescuentosApi {
@@ -44,7 +46,7 @@ public class DescuentosService implements DescuentosApi {
         var tenant = TenantContext.requerido();
         var maximo = negocio.porcentajeMaximoDescuento(tenant.negocioId());
         if (d.porcentaje() == null || d.porcentaje().signum() <= 0 || d.porcentaje().compareTo(maximo) > 0) {
-            throw new IllegalArgumentException("El descuento debe estar entre 0 y " + maximo.stripTrailingZeros().toPlainString() + " %");
+            throw new ReglaNegocioException(ErrorDescuento.PORCENTAJE_FUERA_DE_RANGO, maximo.stripTrailingZeros().toPlainString());
         }
         // Si el lote ya tenía descuento, se reemplaza (solo uno activo por lote)
         jdbc.update("UPDATE descuento SET activo = FALSE WHERE lote_id = ? AND activo", d.loteId());
@@ -54,7 +56,7 @@ public class DescuentosService implements DescuentosApi {
             jdbc.update("INSERT INTO descuento (id, negocio_id, lote_id, porcentaje, creado_por) VALUES (?,?,?,?,?)",
                     id, tenant.negocioId(), d.loteId(), d.porcentaje(), tenant.usuarioId());
         } catch (DataIntegrityViolationException e) {
-            throw new IllegalArgumentException("El lote no existe en este negocio");
+            throw new ReglaNegocioException(ErrorDescuento.LOTE_NO_ENCONTRADO);
         }
         return id;
     }
@@ -63,7 +65,7 @@ public class DescuentosService implements DescuentosApi {
     @Transactional
     public void desactivar(UUID descuentoId) {
         if (jdbc.update("UPDATE descuento SET activo = FALSE WHERE id = ? AND activo", descuentoId) == 0) {
-            throw new IllegalArgumentException("El descuento no existe o ya estaba inactivo");
+            throw new ReglaNegocioException(ErrorDescuento.DESCUENTO_NO_ENCONTRADO);
         }
     }
 

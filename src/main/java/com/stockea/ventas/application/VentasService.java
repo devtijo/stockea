@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,6 +24,12 @@ import java.util.UUID;
 
 @Service
 public class VentasService {
+
+    // Nombres de métricas y etiquetas en un solo lugar
+    private static final String METRICA_VENTAS = "stockea.ventas";
+    private static final String METRICA_PESOS = "stockea.ventas.pesos";
+    private static final String METODO_PAGO = "metodo_pago";
+    private static final String ESTADO = "estado";
 
     private final InventarioApi inventarioApi;
     private final DescuentosApi descuentosApi;
@@ -46,9 +53,9 @@ public class VentasService {
         this.eventos = eventos;
         this.metricas = metricas;
         for (var metodo : MetodoPago.values()) {
-            metricas.counter("stockea.ventas.pesos", "metodo_pago", metodo.name());
+            metricas.counter(METRICA_PESOS, METODO_PAGO, metodo.name());
             for (var estado : EstadoVenta.values()) {
-                metricas.counter("stockea.ventas", "metodo_pago", metodo.name(), "estado", estado.name());
+                metricas.counter(METRICA_VENTAS, METODO_PAGO, metodo.name(), ESTADO, estado.name());
             }
         }
     }
@@ -73,41 +80,11 @@ public class VentasService {
         List<DiferenciaPrecio> diferencias = new ArrayList<>();
         List<FraccionLote> salidas = new ArrayList<>();
         for (var itemCmd : items) {
-            var asignacion = inventarioApi.asignarFefo(
-                    negocioId, itemCmd.productoId(), itemCmd.cantidad(), fechaVenta);
-            salidas.addAll(asignacion.fracciones());
-
-            // Precio que regía cuando se hizo la venta
-            var precioEsperado = inventarioApi.precioVigente(negocioId, itemCmd.productoId(), fechaCliente)
-                    .orElse(itemCmd.precioUnitario());
-
-            // Descuento REAL: el de los lotes que FEFO entregó, no el que el dispositivo supuso
-            var descuentosLote = descuentosApi.vigentesPorLote(negocioId,
-                    asignacion.fracciones().stream().map(FraccionLote::loteId).toList());
-            BigDecimal descuentoReal = BigDecimal.ZERO;
-            List<AsignacionLote> asignaciones = new ArrayList<>();
-            for (var f : asignacion.fracciones()) {
-                var d = descuentosLote.get(f.loteId());
-                var monto = d == null ? BigDecimal.ZERO
-                        : descuentosApi.calcularMonto(f.cantidad(), precioEsperado, d.porcentaje());
-                descuentoReal = descuentoReal.add(monto);
-                asignaciones.add(new AsignacionLote(UUID.randomUUID(), f.loteId(), f.cantidad(),
-                        d == null ? null : d.id(), monto, OrigenAsignacion.DISPOSITIVO));
-            }
-
-            // El servidor NO recalcula lo cobrado guarda lo que cobró el dispositivo
-            var descuentoCliente = itemCmd.descuento() == null ? BigDecimal.ZERO : itemCmd.descuento();
-            var sinCobertura = descuentoCliente.subtract(descuentoReal).max(BigDecimal.ZERO);
-
-            var itemId = UUID.randomUUID();
-            itemsProcesados.add(new ItemVenta(
-                    itemId, itemCmd.productoId(), itemCmd.cantidad(), itemCmd.precioUnitario(),
-                    descuentoCliente, sinCobertura, asignacion.sinCobertura(), asignaciones));
-
-            var cobrado = itemCmd.cantidad().multiply(itemCmd.precioUnitario()).subtract(descuentoCliente);
-            var esperado = itemCmd.cantidad().multiply(precioEsperado).subtract(descuentoReal);
-            if (cobrado.subtract(esperado).abs().compareTo(TOLERANCIA) >= 0) {
-                diferencias.add(new DiferenciaPrecio(itemId, itemCmd.productoId(), cobrado, esperado));
+            var linea = procesarLinea(negocioId, fechaVenta, fechaCliente, itemCmd);
+            itemsProcesados.add(linea.item());
+            salidas.addAll(linea.salidas());
+            if (linea.diferencia() != null) {
+                diferencias.add(linea.diferencia());
             }
         }
 
@@ -190,9 +167,48 @@ public class VentasService {
         var estado = venta.getEstado().name();
         var total = venta.getTotal().doubleValue();
         DespuesDelCommit.ejecutar(() -> {
-            metricas.counter("stockea.ventas", "metodo_pago", metodo, "estado", estado).increment();
-            metricas.counter("stockea.ventas.pesos", "metodo_pago", metodo).increment(total);
+            metricas.counter(METRICA_VENTAS, METODO_PAGO, metodo, ESTADO, estado).increment();
+            metricas.counter(METRICA_PESOS, METODO_PAGO, metodo).increment(total);
         });
+    }
+
+    // Resultado de procesar una línea: el ítem, los lotes de los que sale y la diferencia de precio (o null)
+    private record LineaProcesada(ItemVenta item, List<FraccionLote> salidas, DiferenciaPrecio diferencia) {}
+
+    private LineaProcesada procesarLinea(UUID negocioId, LocalDate fechaVenta, Instant fechaCliente, ItemCmd itemCmd) {
+        var asignacion = inventarioApi.asignarFefo(negocioId, itemCmd.productoId(), itemCmd.cantidad(), fechaVenta);
+
+        // Precio que regía cuando se hizo la venta (aunque llegue horas después por estar sin internet)
+        var precioEsperado = inventarioApi.precioVigente(negocioId, itemCmd.productoId(), fechaCliente)
+                .orElse(itemCmd.precioUnitario());
+
+        // Descuento REAL: el de los lotes que FEFO entregó, no el que el dispositivo supuso
+        var descuentosLote = descuentosApi.vigentesPorLote(negocioId,
+                asignacion.fracciones().stream().map(FraccionLote::loteId).toList());
+        BigDecimal descuentoReal = BigDecimal.ZERO;
+        List<AsignacionLote> asignaciones = new ArrayList<>();
+        for (var f : asignacion.fracciones()) {
+            var d = descuentosLote.get(f.loteId());
+            var monto = d == null ? BigDecimal.ZERO
+                    : descuentosApi.calcularMonto(f.cantidad(), precioEsperado, d.porcentaje());
+            descuentoReal = descuentoReal.add(monto);
+            asignaciones.add(new AsignacionLote(UUID.randomUUID(), f.loteId(), f.cantidad(),
+                    d == null ? null : d.id(), monto, OrigenAsignacion.DISPOSITIVO));
+        }
+
+        // El servidor NO recalcula lo cobrado (ADR-021): guarda lo que cobró el dispositivo y
+        // deja constancia de la parte del descuento que no estaba respaldada por el lote real.
+        var descuentoCliente = itemCmd.descuento() == null ? BigDecimal.ZERO : itemCmd.descuento();
+        var sinCobertura = descuentoCliente.subtract(descuentoReal).max(BigDecimal.ZERO);
+
+        var item = new ItemVenta(UUID.randomUUID(), itemCmd.productoId(), itemCmd.cantidad(),
+                itemCmd.precioUnitario(), descuentoCliente, sinCobertura, asignacion.sinCobertura(), asignaciones);
+
+        var cobrado = itemCmd.cantidad().multiply(itemCmd.precioUnitario()).subtract(descuentoCliente);
+        var esperado = itemCmd.cantidad().multiply(precioEsperado).subtract(descuentoReal);
+        var diferencia = cobrado.subtract(esperado).abs().compareTo(TOLERANCIA) >= 0
+                ? new DiferenciaPrecio(item.id(), itemCmd.productoId(), cobrado, esperado) : null;
+        return new LineaProcesada(item, asignacion.fracciones(), diferencia);
     }
 
     public record ItemCmd(UUID productoId, BigDecimal cantidad, BigDecimal precioUnitario, BigDecimal descuento) {}

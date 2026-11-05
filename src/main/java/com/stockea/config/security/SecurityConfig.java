@@ -32,6 +32,9 @@ public class SecurityConfig {
     private static final Set<String> ROLES_STOCKEA =
             Arrays.stream(Rol.values()).map(Enum::name).collect(Collectors.toUnmodifiableSet());
 
+    // java:S4502 (CSRF desactivado): es seguro aquí porque la API no usa cookies de sesión
+    // el token viaja en la cabecera Authorization, que un sitio ajeno no puede poner
+    @SuppressWarnings("java:S4502")
     @Bean
     SecurityFilterChain api(HttpSecurity http) throws Exception {
         http

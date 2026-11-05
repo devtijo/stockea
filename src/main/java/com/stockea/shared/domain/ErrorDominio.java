@@ -16,7 +16,8 @@ public enum ErrorDominio {
     INVARIANTE_ITEM_VENTA_ROTA("La suma de asignaciones más cantidad sin cobertura debe igualar la cantidad vendida"),
     TOTAL_CLIENTE_OBLIGATORIO("El total del cliente es obligatorio"),
     MONTO_RECIBIDO_OBLIGATORIO("El monto recibido es obligatorio"),
-    MONTO_RECIBIDO_INSUFICIENTE("El monto recibido no cubre el total de la venta");
+    MONTO_RECIBIDO_INSUFICIENTE("El monto recibido no cubre el total de la venta"),
+    PAYLOAD_VENTA_INVALIDO("Los datos de la venta no tienen el formato esperado");
 
 
     private final String mensaje;

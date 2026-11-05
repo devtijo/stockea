@@ -33,7 +33,9 @@ public class OperacionSyncEntity {
     @Column(name = "procesada_en") private Instant procesadaEn;
     @Column(name = "resultado_id") private UUID resultadoId;
 
-    public OperacionSyncEntity() {}
+    public OperacionSyncEntity() {
+        // constructor vacío que exige JPA
+    }
 
     public UUID getNegocioId() { return negocioId; } public void setNegocioId(UUID v) { this.negocioId = v; }
     public UUID getOperacionId() { return operacionId; } public void setOperacionId(UUID v) { this.operacionId = v; }

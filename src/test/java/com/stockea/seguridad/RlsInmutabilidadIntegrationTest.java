@@ -90,16 +90,13 @@ class RlsInmutabilidadIntegrationTest extends IntegracionBase {
                 "INSERT INTO consentimiento (id, negocio_id, usuario_id, version_politica, aceptado_en) VALUES (?,?,?,?,?)",
                 UUID.randomUUID(), a.negocioId(), a.usuarioId(), "2026-10", java.sql.Timestamp.from(Instant.now())));
 
-        var conexion = new SingleConnectionDataSource(jdbcUrl(), "stockea_migrator", "test", true);
-        try {
+        try (var conexion = new SingleConnectionDataSource(jdbcUrl(), "stockea_migrator", "test", true)) {
             var dueno = new JdbcTemplate(conexion);
             dueno.queryForObject("SELECT set_config('app.negocio_id', ?, false)", String.class, a.negocioId().toString());
             assertThatThrownBy(() -> dueno.update("UPDATE consentimiento SET version_politica = 'alterada'"))
                     .rootCause().hasMessageContaining("Registro inmutable");
             assertThatThrownBy(() -> dueno.update("DELETE FROM consentimiento"))
                     .rootCause().hasMessageContaining("Registro inmutable");
-        } finally {
-            conexion.destroy();
         }
     }
 }

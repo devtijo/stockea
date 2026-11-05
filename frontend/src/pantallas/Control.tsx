@@ -4,7 +4,7 @@ import { api, mensajeDeError } from '../lib/auth';
 import { db } from '../lib/db';
 import { pesos } from '../lib/formato';
 
-// Control del supervisor: discrepancias que dejaron las ventas y cuadre de cada turno de caja
+// Control del supervisor: discrepancias que dejaron las ventas (ADR-002) y cuadre de cada turno de caja (ADR-025)
 
 interface Discrepancia {
     id: string;
@@ -129,7 +129,7 @@ export default function Control({ online }: { online: boolean }) {
                                 {resolviendo === d.id && (
                                     <div className="resolver">
                                         <label htmlFor={`nota-${d.id}`}>¿Qué se hizo?</label>
-                                        <textarea id={`nota-${d.id}`} rows={2} maxLength={300} autoFocus value={nota}
+                                        <textarea id={`nota-${d.id}`} rows={2} maxLength={300} value={nota}
                                                   placeholder="Ej.: conteo físico, había mercancía sin registrar"
                                                   onChange={(e) => setNota(e.target.value)} />
                                         <div className="acciones">

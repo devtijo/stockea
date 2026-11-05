@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, entrar, iniciarSesion, mensajeDeError, salir } from './lib/auth';
 import { guardarCatalogo, perfilGuardado, prepararEquipoPara, type Perfil, type ProductoLocal } from './lib/db';
 import { ETIQUETA_ROL } from './lib/formato';
-import { reanudarSync, useSyncOutbox } from './SyncOutbox';
+import { reanudarSync, useSyncOutbox, type EstadoSync } from './SyncOutbox';
 import Control from './pantallas/Control';
 import DesbloqueoPin from './pantallas/DesbloqueoPin';
 import Inventario from './pantallas/Inventario';
@@ -137,10 +137,61 @@ interface CajaProps {
   actualizarCatalogo: () => void;
 }
 
-function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatalogo }: CajaProps) {
-  const sync = useSyncOutbox();
-  const esAdmin = perfil.rol === 'ADMINISTRADOR';
+const ETIQUETA_CONEXION = {
+  online: 'En línea',
+  'sin-servidor': 'En línea · servidor no responde',
+  offline: 'Modo offline',
+} as const;
+
+// Pestañas por rol: el cajero solo vende (no ve la barra); supervisor y administrador ven gestión
+function Pestanas({ perfil, pestana, setPestana }: Readonly<Pick<CajaProps, 'perfil' | 'pestana' | 'setPestana'>>) {
+  const opciones: { valor: Pestana; texto: string }[] = [
+    { valor: 'VENDER', texto: 'Vender' },
+    { valor: 'INVENTARIO', texto: 'Inventario' },
+    { valor: 'CONTROL', texto: 'Control' },
+    { valor: 'REPOSICION', texto: 'Reposición' },
+  ];
+  if (perfil.rol === 'ADMINISTRADOR') opciones.push({ valor: 'USUARIOS', texto: 'Usuarios' });
+  return (
+      <nav className="pestanas" aria-label="Secciones">
+        {opciones.map((o) => (
+            <button key={o.valor} type="button" aria-current={pestana === o.valor ? 'page' : undefined}
+                    onClick={() => setPestana(o.valor)}>
+              {o.texto}
+            </button>
+        ))}
+      </nav>
+  );
+}
+
+// Aviso para volver a iniciar sesión: la cola no se envía sin token
+function AvisoSesion({ pausa }: Readonly<{ pausa: EstadoSync['pausa'] }>) {
+  const revocado = pausa === 'ACCESO_REVOCADO';
+  return (
+      <p className="aviso aviso--barra" role="alert">
+        {revocado
+            ? 'Este usuario o equipo fue bloqueado. Las ventas siguen guardadas; un administrador debe iniciar sesión.'
+            : 'Inicie sesión para enviar las ventas guardadas.'}{' '}
+        <button type="button" className="texto" onClick={revocado ? salir : entrar}>
+          {revocado ? 'Cambiar de usuario' : 'Iniciar sesión'}
+        </button>
+      </p>
+  );
+}
+
+function Contenido({ perfil, pestana, online, sync, actualizarCatalogo }: Readonly<{
+  perfil: Perfil; pestana: Pestana; online: boolean; sync: EstadoSync; actualizarCatalogo: () => void;
+}>) {
   const esSupervisor = perfil.rol !== 'CAJERO'; // roles acumulativos (ADR-005)
+  if (pestana === 'USUARIOS' && perfil.rol === 'ADMINISTRADOR') return <Usuarios perfil={perfil} online={online} />;
+  if (pestana === 'INVENTARIO' && esSupervisor) return <Inventario online={online} alCambiar={actualizarCatalogo} />;
+  if (pestana === 'CONTROL' && esSupervisor) return <Control online={online} />;
+  if (pestana === 'REPOSICION' && esSupervisor) return <Reposicion online={online} />;
+  return <Vender perfil={perfil} sync={sync} alActualizarCatalogo={actualizarCatalogo} />;
+}
+
+function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatalogo }: Readonly<CajaProps>) {
+  const sync = useSyncOutbox();
 
   // Tras cada sincronización el servidor ya descontó stock: se refresca la referencia local.
   useEffect(() => {
@@ -150,12 +201,8 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
   // Abrió sin internet y volvió la conexión: hay que iniciar sesión para enviar la cola.
   const debeEntrar = (sinConexionAlAbrir && sync.online) || sync.pausa !== null;
 
-  const estadoConexion = !sync.online ? 'offline' : sync.servidorResponde ? 'online' : 'sin-servidor';
-  const etiquetaConexion = {
-    online: 'En línea',
-    'sin-servidor': 'En línea · servidor no responde',
-    offline: 'Modo offline',
-  }[estadoConexion];
+  let estadoConexion: keyof typeof ETIQUETA_CONEXION = 'offline';
+  if (sync.online) estadoConexion = sync.servidorResponde ? 'online' : 'sin-servidor';
 
   return (
       <div className="app">
@@ -169,7 +216,7 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
           <div className="cabecera__lado">
             <div className={`conexion conexion--${estadoConexion}`} role="status" aria-live="polite">
               <span className="punto" aria-hidden="true" />
-              <strong>{etiquetaConexion}</strong>
+              <strong>{ETIQUETA_CONEXION[estadoConexion]}</strong>
               <span className="conexion__detalle">
               {sync.pendientes} en cola{sync.fallidas > 0 ? ` · ${sync.fallidas} fallida(s)` : ''}
             </span>
@@ -181,50 +228,12 @@ function Caja({ perfil, sinConexionAlAbrir, pestana, setPestana, actualizarCatal
           </div>
         </header>
 
-        {debeEntrar && sync.online && (
-            <p className="aviso aviso--barra" role="alert">
-              {sync.pausa === 'ACCESO_REVOCADO'
-                  ? 'Este usuario o equipo fue bloqueado. Las ventas siguen guardadas; un administrador debe iniciar sesión.'
-                  : 'Inicie sesión para enviar las ventas guardadas.'}{' '}
-              <button type="button" className="texto" onClick={sync.pausa === 'ACCESO_REVOCADO' ? salir : entrar}>
-                {sync.pausa === 'ACCESO_REVOCADO' ? 'Cambiar de usuario' : 'Iniciar sesión'}
-              </button>
-            </p>
-        )}
+        {debeEntrar && sync.online && <AvisoSesion pausa={sync.pausa} />}
 
-        {esSupervisor && (
-            <nav className="pestanas" aria-label="Secciones">
-              <button type="button" aria-current={pestana === 'VENDER' ? 'page' : undefined} onClick={() => setPestana('VENDER')}>
-                Vender
-              </button>
-              <button type="button" aria-current={pestana === 'INVENTARIO' ? 'page' : undefined} onClick={() => setPestana('INVENTARIO')}>
-                Inventario
-              </button>
-              <button type="button" aria-current={pestana === 'CONTROL' ? 'page' : undefined} onClick={() => setPestana('CONTROL')}>
-                Control
-              </button>
-              <button type="button" aria-current={pestana === 'REPOSICION' ? 'page' : undefined} onClick={() => setPestana('REPOSICION')}>
-                Reposición
-              </button>
-              {esAdmin && (
-                  <button type="button" aria-current={pestana === 'USUARIOS' ? 'page' : undefined} onClick={() => setPestana('USUARIOS')}>
-                    Usuarios
-                  </button>
-              )}
-            </nav>
-        )}
+        {perfil.rol !== 'CAJERO' && <Pestanas perfil={perfil} pestana={pestana} setPestana={setPestana} />}
 
-        {pestana === 'USUARIOS' && esAdmin ? (
-            <Usuarios perfil={perfil} online={sync.online && !sinConexionAlAbrir} />
-        ) : pestana === 'INVENTARIO' && esSupervisor ? (
-            <Inventario online={sync.online && !sinConexionAlAbrir} alCambiar={actualizarCatalogo} />
-        ) : pestana === 'CONTROL' && esSupervisor ? (
-            <Control online={sync.online && !sinConexionAlAbrir} />
-        ) : pestana === 'REPOSICION' && esSupervisor ? (
-            <Reposicion online={sync.online && !sinConexionAlAbrir} />
-        ) : (
-            <Vender perfil={perfil} sync={sync} alActualizarCatalogo={actualizarCatalogo} />
-        )}
+        <Contenido perfil={perfil} pestana={pestana} online={sync.online && !sinConexionAlAbrir} sync={sync}
+                   actualizarCatalogo={actualizarCatalogo} />
 
         <footer className="pie-estado">
           <span>{sync.mensaje}</span>

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, mensajeDeError } from '../lib/auth';
 import { pesos } from '../lib/formato';
 
-// Gestión de inventario del supervisor: productos, precios, entrada de mercancía y descuentos por lote
-// Necesita internet: son cambios que deben quedar en el servidor antes de que los cajeros vendan
+// Gestión de inventario del supervisor: productos, precios, entrada de mercancía y descuentos por lote.
+// Necesita internet: son cambios que deben quedar en el servidor antes de que los cajeros vendan.
 
 interface Lote {
     id: string;
@@ -139,7 +139,7 @@ export default function Inventario({ online, alCambiar }: { online: boolean; alC
 
     const editorEnLinea = (etiqueta: string) => (
         <span className="editor">
-            <input aria-label={etiqueta} inputMode="decimal" autoFocus value={valorEdicion}
+            <input aria-label={etiqueta} inputMode="decimal" value={valorEdicion}
                    onChange={(e) => setValorEdicion(e.target.value)}
                    onKeyDown={(e) => e.key === 'Enter' && guardarEdicion()} />
             <button type="button" className="primario" onClick={guardarEdicion}>Guardar</button>

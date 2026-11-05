@@ -1,5 +1,6 @@
 package com.stockea.identidad.application;
 
+import com.stockea.identidad.domain.ErrorIdentidad;
 import com.stockea.identidad.api.DispositivoApi;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -26,7 +27,7 @@ class DispositivoApiImpl implements DispositivoApi {
         // RLS: solo se ve el usuario si es de este negocio.
         var activos = jdbc.queryForList("SELECT activo FROM usuario WHERE id = ?", Boolean.class, usuarioId);
         if (activos.isEmpty() || !Boolean.TRUE.equals(activos.getFirst())) {
-            throw new AccesoRevocadoException("El usuario fue inhabilitado en este negocio");
+            throw new AccesoRevocadoException(ErrorIdentidad.USUARIO_INHABILITADO.mensaje());
         }
         var ahora = Timestamp.from(clock.instant());
         Boolean activo = jdbc.queryForObject("""
@@ -37,7 +38,7 @@ class DispositivoApiImpl implements DispositivoApi {
                                             ELSE dispositivo.ultimo_uso_en END
                 RETURNING activo""", Boolean.class, negocioId, dispositivoId, usuarioId, ahora, ahora);
         if (!Boolean.TRUE.equals(activo)) {
-            throw new AccesoRevocadoException("El dispositivo está bloqueado para este negocio");
+            throw new AccesoRevocadoException(ErrorIdentidad.DISPOSITIVO_BLOQUEADO.mensaje());
         }
     }
 }

@@ -60,6 +60,11 @@ class InventarioIntegrationTest extends IntegracionBase {
                 .isEqualByComparingTo("24");
         assertThat(valor("SELECT tipo FROM movimiento_inventario WHERE lote_id = ?", String.class, lote))
                 .isEqualTo("ENTRADA");
+
+        // La pantalla de inventario muestra el stock vendible y el lote
+        var productos = jsonMapper.readTree(get("/api/inventario/productos", supervisor.token()).body());
+        assertThat(new BigDecimal(productos.get(0).get("stock").toString())).isEqualByComparingTo("24");
+        assertThat(productos.get(0).get("lotes").get(0).get("estado").asString()).isEqualTo("ACTIVO");
     }
 
     @Test
@@ -70,7 +75,9 @@ class InventarioIntegrationTest extends IntegracionBase {
                 {"productoId":"%s","cantidad":5,"fechaVencimiento":"%s","costoUnitario":2500}
                 """.formatted(producto, LocalDate.now().minusDays(1));
 
-        assertThat(post("/api/inventario/entradas", supervisor.token(), cuerpo).statusCode()).isEqualTo(400);
+        var r = post("/api/inventario/entradas", supervisor.token(), cuerpo);
+        assertThat(r.statusCode()).isEqualTo(400);
+        assertThat(r.body()).contains("MERCANCIA_VENCIDA");
     }
 
     @Test

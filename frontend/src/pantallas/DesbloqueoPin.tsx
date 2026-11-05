@@ -5,7 +5,7 @@ const INTENTOS_ANTES_DE_ESPERAR = 5;
 const ESPERA_MS = 30_000;
 
 // Al abrir la app SIN internet no hay Keycloak: el PIN de caja confirma que quien vende es el
-// último usuario que inició sesión en este equipo
+// último usuario que inició sesión en este equipo. Se verifica aquí mismo con WebCrypto.
 export default function DesbloqueoPin({ perfil, alDesbloquear }: { perfil: Perfil; alDesbloquear: () => void }) {
     const [pin, setPin] = useState('');
     const [fallos, setFallos] = useState(0);
@@ -50,7 +50,7 @@ export default function DesbloqueoPin({ perfil, alDesbloquear }: { perfil: Perfi
                     <div className="campo">
                         <label htmlFor="pin">PIN</label>
                         <input id="pin" type="password" inputMode="numeric" pattern="\d{4,6}" maxLength={6} required
-                               autoComplete="off" autoFocus value={pin} onChange={(e) => setPin(e.target.value)} />
+                               autoComplete="off" value={pin} onChange={(e) => setPin(e.target.value)} />
                     </div>
                     <div className="acciones">
                         <button type="submit" className="primario" disabled={verificando}>

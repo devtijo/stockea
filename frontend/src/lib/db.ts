@@ -342,10 +342,10 @@ export async function guardarCatalogo(productos: ProductoLocal[]): Promise<void>
 // PIN de caja sin internet: mismo PBKDF2-SHA256 que el backend (VerificadorPin)
 export async function verificarPin(pin: string, material: NonNullable<Perfil['pin']>): Promise<boolean> {
     const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
-    const sal = Uint8Array.from(atob(material.sal), (c) => c.charCodeAt(0));
+    const sal = Uint8Array.from(atob(material.sal), (c) => c.codePointAt(0) ?? 0);
     const bits = new Uint8Array(await crypto.subtle.deriveBits(
         { name: 'PBKDF2', hash: 'SHA-256', salt: sal, iterations: material.iteraciones }, base, 256));
-    const esperado = Uint8Array.from(atob(material.hash), (c) => c.charCodeAt(0));
+    const esperado = Uint8Array.from(atob(material.hash), (c) => c.codePointAt(0) ?? 0);
     if (bits.length !== esperado.length) return false;
     let diferencia = 0;
     for (let i = 0; i < bits.length; i++) diferencia |= bits[i] ^ esperado[i];

@@ -41,8 +41,9 @@ class DiscrepanciasIntegrationTest extends IntegracionBase {
         var resueltas = jsonMapper.readTree(get("/api/discrepancias?estado=RESUELTA", supervisor.token()).body());
         assertThat(resueltas.get(0).get("notaResolucion").asString()).startsWith("Conteo físico");
         // Resolver otra vez: ya no está abierta
-        assertThat(post("/api/discrepancias/" + id + "/resolver", supervisor.token(), "{\"nota\":\"otra\"}")
-                .statusCode()).isEqualTo(404);
+        var otraVez = post("/api/discrepancias/" + id + "/resolver", supervisor.token(), "{\"nota\":\"otra\"}");
+        assertThat(otraVez.statusCode()).isEqualTo(404);
+        assertThat(otraVez.body()).contains("DISCREPANCIA_NO_ENCONTRADA");
     }
 
     @Test

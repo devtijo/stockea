@@ -19,18 +19,29 @@ services:
     volumes:
       - ./infra/gateway/certs:/certs
       - ./infra/gateway/generar-certificado.sh:/generar-certificado.sh:ro
+      - gatewaycerts:/gateway-certs
     restart: "no"
 
-  gateway:                    # API Gateway de borde (ADR-007/013)
-    image: nginx:1.29-alpine
+  gateway:                    # API Gateway de borde + WAF (ADR-007/013/027): Nginx con ModSecurity y OWASP CRS
+    image: stockea/gateway:local
+    build: ./infra/gateway    # owasp/modsecurity-crs (versión fija) + parches de Alpine
     restart: unless-stopped
-    ports:
-      - "${GATEWAY_BIND:-127.0.0.1}:443:443"
-      - "${GATEWAY_BIND:-127.0.0.1}:80:80"
+    ports:                    # la imagen corre sin root: escucha en 8080/8443
+      - "${GATEWAY_BIND:-127.0.0.1}:443:8443"
+      - "${GATEWAY_BIND:-127.0.0.1}:80:8080"
+    environment:
+      BLOCKING_PARANOIA: 1          # nivel de paranoia del CRS (1 = pocos falsos positivos)
+      ANOMALY_INBOUND: 5            # puntaje para bloquear una petición (una regla crítica basta)
+      ANOMALY_OUTBOUND: 4
+      ALLOWED_METHODS: GET HEAD POST PUT OPTIONS
+      MODSEC_RULE_ENGINE: ${WAF_MODO:-On}   # On = bloquea; DetectionOnly = solo registra
+      MODSEC_AUDIT_ENGINE: RelevantOnly     # solo lo que el WAF marcó, en JSON por la consola
+      MODSEC_RESP_BODY_ACCESS: "Off"        # no inspeccionar respuestas (la API responde JSON)
     volumes:
-      - ./infra/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/gateway/nginx.conf:/etc/nginx/templates/nginx.conf.template:ro
       - ./infra/gateway/snippets:/etc/nginx/snippets:ro
-      - ./infra/gateway/certs:/etc/nginx/certs:ro
+      - gatewaycerts:/etc/nginx/certs:ro      # copia del certificado con dueño nginx (ver generar-certificado.sh)
+      - ./infra/gateway/waf:/etc/nginx/waf:ro
     networks: [borde]
     depends_on:
       certificados: { condition: service_completed_successfully }
@@ -220,11 +231,29 @@ services:
     networks: [borde, interna]
     depends_on: [gateway]
 
+  # calidad (solo con: docker compose --profile calidad up -d sonarqube)
+  sonarqube:                  # análisis estático local: bugs, vulnerabilidades, olores, cobertura
+    image: sonarqube:26.10.0.133078-community
+    profiles: [calidad]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"   # Docker Desktop: evita exigir vm.max_map_count
+    volumes:
+      - sonardata:/opt/sonarqube/data
+      - sonarextensions:/opt/sonarqube/extensions
+    networks: [calidad]
+
 networks:
+  calidad: {}
   borde: {}
   interna: {}
 
 volumes:
+  sonardata: {}
+  sonarextensions: {}
+  gatewaycerts: {}
   pgdata: {}
   rabbitmqdata: {}
   prometheusdata: {}

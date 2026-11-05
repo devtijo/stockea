@@ -1,5 +1,7 @@
 package com.stockea.ventas.application;
 
+import com.stockea.shared.domain.ErrorDominio;
+import com.stockea.shared.domain.DomainException;
 import com.stockea.identidad.api.NegocioApi;
 import com.stockea.sync.api.ComandoOperacion;
 import com.stockea.sync.api.EstadoOperacion;
@@ -45,10 +47,10 @@ public class ProcesadorVenta implements ProcesadorOperacion {
         try {
             payload = jsonMapper.readValue(cmd.payloadJson(), VentaPayload.class);
         } catch (Exception e) {
-            throw new IllegalArgumentException("Payload de venta inválido", e);
+            throw new DomainException(ErrorDominio.PAYLOAD_VENTA_INVALIDO);
         }
 
-        // Toda venta pertenece a un turno de caja Sin turno no hay cuadre posible.
+        // Toda venta pertenece a un turno de caja (ADR-025). Sin turno no hay cuadre posible.
         if (payload.turnoId() == null) {
             return new ResultadoOperacion(cmd.operacionId(), EstadoOperacion.RECHAZADA_SIN_TURNO, null);
         }
@@ -71,7 +73,7 @@ public class ProcesadorVenta implements ProcesadorOperacion {
 
         var discrepancias = new ArrayList<ResultadoOperacion.DiscrepanciaInfo>();
 
-        // Una discrepancia por CADA item que no alcanzó a cubrirse con stock
+        // Una discrepancia por CADA item que no alcanzó a cubrirse con stock (ADR-002)
         itemVentaRepo.findByVentaIdOrderByLinea(resultado.ventaId()).stream()
                 .filter(i -> i.getCantidadSinCobertura() != null && i.getCantidadSinCobertura().signum() > 0)
                 .map(i -> new ResultadoOperacion.DiscrepanciaInfo(
@@ -84,7 +86,7 @@ public class ProcesadorVenta implements ProcesadorOperacion {
                         i.getPrecioUnitario()))
                 .forEach(discrepancias::add);
 
-        // Y una por cada línea cobrada distinto a lo vigente se guarda el valor neto de la línea
+        // Y una por cada línea cobrada distinto a lo vigente (ADR-021): se guarda el valor neto de la línea
         resultado.diferencias().stream()
                 .map(d -> new ResultadoOperacion.DiscrepanciaInfo(
                         "PRECIO_DIFERENTE",
