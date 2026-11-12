@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # --- Etapa 1: construir la PWA
-FROM node:22-alpine AS construccion
+FROM node:25-alpine AS construccion
 WORKDIR /web
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
